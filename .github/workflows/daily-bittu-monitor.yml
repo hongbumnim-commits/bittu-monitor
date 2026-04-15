@@ -1,0 +1,40 @@
+name: Daily Bittu Monitor
+
+on:
+  schedule:
+    # 매일 한국시간 17:30 (UTC 08:30) 실행
+    # 코스피 마감(15:30) + 네이버 데이터 업데이트 시간 여유 고려
+    - cron: '30 8 * * 1-5'
+  workflow_dispatch:  # GitHub 페이지에서 수동 실행 버튼
+
+permissions:
+  contents: write  # data/, docs/ 폴더에 결과 커밋 권한
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run monitor
+        run: python monitor.py
+
+      - name: Commit results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/ docs/
+          git diff --staged --quiet || git commit -m "auto: update $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push
