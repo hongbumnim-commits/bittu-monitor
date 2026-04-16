@@ -2,19 +2,109 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<title>빚투 모니터 — 준비 중</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>빚투 모니터 — 코스피 위험 신호</title>
+<script src="https://cdn.jsdelivr.net/npm/plotly.js@2.35.2/dist/plotly.min.js"></script>
 <style>
-  body { font-family: -apple-system, system-ui, sans-serif; max-width: 600px;
-         margin: 100px auto; padding: 24px; text-align: center; color: #555; }
-  h1 { font-size: 28px; color: #222; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+         max-width: 1100px; margin: 0 auto; padding: 24px; color: #222; background: #fafafa; }
+  h1 { font-size: 24px; font-weight: 600; margin: 0 0 6px; }
+  .meta { color: #888; font-size: 13px; margin-bottom: 24px; }
+  .overall { background: white; padding: 18px 22px; border-radius: 12px; margin-bottom: 24px;
+              border-left: 6px solid #1D9E75; }
+  .overall-label { font-size: 13px; color: #888; }
+  .overall-value { font-size: 32px; font-weight: 600; color: #1D9E75; }
+  .signal-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+                   gap: 14px; margin-bottom: 24px; }
+  .sig { background: white; padding: 16px; border-radius: 12px; border-top: 4px solid; }
+  .sig-name { font-size: 13px; color: #888; margin-bottom: 4px; }
+  .sig-status { font-size: 18px; font-weight: 600; margin-bottom: 6px; }
+  .sig-desc { font-size: 13px; color: #555; line-height: 1.5; }
+  .chart { background: white; padding: 16px; border-radius: 12px; margin-bottom: 16px; }
+  .footer { font-size: 11px; color: #aaa; margin-top: 32px; padding-top: 16px; border-top: 1px solid #eee; }
 </style>
 </head>
 <body>
 <h1>빚투 모니터</h1>
-<p>첫 데이터를 수집 중입니다.</p>
-<p style="color: #888; font-size: 13px;">
-GitHub Actions가 한국시간 평일 17:30에 자동 실행되면서 데이터를 채워나갑니다.<br>
-수동으로 즉시 실행하려면 Actions 탭 → Daily Bittu Monitor → Run workflow 버튼을 누르세요.
-</p>
+<div class="meta">코스피 위험 신호 자동 감시 · 최근 업데이트 2026년 04월 16일</div>
+
+<div class="overall">
+  <div class="overall-label">종합 위험도 (0/9)</div>
+  <div class="overall-value">평상</div>
+</div>
+
+<div class="signal-grid">
+  <div class="sig" style="border-color: #1D9E75">
+    <div class="sig-name">① 반대매매 일평균 상승 추세</div>
+    <div class="sig-status" style="color: #1D9E75">안전</div>
+    <div class="sig-desc">오늘 0억 / 20일 평균 0억</div>
+  </div>
+  <div class="sig" style="border-color: #1D9E75">
+    <div class="sig-name">② 신용잔고 증가율 추월</div>
+    <div class="sig-status" style="color: #1D9E75">안전</div>
+    <div class="sig-desc">데이터 부족</div>
+  </div>
+  <div class="sig" style="border-color: #1D9E75">
+    <div class="sig-name">③ 반도체 양대장 동시 -3% 빈도</div>
+    <div class="sig-status" style="color: #1D9E75">안전</div>
+    <div class="sig-desc">최근 5영업일 중 동시 -3% 발생: 0회</div>
+  </div>
+</div>
+
+<div class="chart"><div id="chart1" style="height: 320px;"></div></div>
+<div class="chart"><div id="chart2" style="height: 320px;"></div></div>
+<div class="chart"><div id="chart3" style="height: 320px;"></div></div>
+
+<div class="footer">
+  데이터: FinanceDataReader(한국거래소), 네이버 금융 증시자금동향 ·
+  평일 한국시간 17:30 GitHub Actions 자동 갱신 ·
+  투자 권유 아님, 모든 판단의 책임은 본인에게 있습니다.
+</div>
+
+<script>
+const dates = ["2026-01-19", "2026-01-20", "2026-01-21", "2026-01-22", "2026-01-23", "2026-01-26", "2026-01-27", "2026-01-28", "2026-01-29", "2026-01-30", "2026-02-02", "2026-02-03", "2026-02-04", "2026-02-05", "2026-02-06", "2026-02-09", "2026-02-10", "2026-02-11", "2026-02-12", "2026-02-13", "2026-02-19", "2026-02-20", "2026-02-23", "2026-02-24", "2026-02-25", "2026-02-26", "2026-02-27", "2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06", "2026-03-09", "2026-03-10", "2026-03-11", "2026-03-12", "2026-03-13", "2026-03-16", "2026-03-17", "2026-03-18", "2026-03-19", "2026-03-20", "2026-03-23", "2026-03-24", "2026-03-25", "2026-03-26", "2026-03-27", "2026-03-30", "2026-03-31", "2026-04-01", "2026-04-02", "2026-04-03", "2026-04-06", "2026-04-07", "2026-04-08", "2026-04-09", "2026-04-10", "2026-04-13", "2026-04-14", "2026-04-15", "2026-04-16"];
+const kospi = [4904.66, 4885.75, 4909.93, 4952.53, 4990.07, 4949.59, 5084.85, 5170.81, 5221.25, 5224.36, 4949.67, 5288.08, 5371.1, 5163.57, 5089.14, 5298.04, 5301.69, 5354.49, 5522.27, 5507.01, 5677.25, 5808.53, 5846.09, 5969.64, 6083.86, 6307.27, 6244.13, 5791.91, 5093.54, 5583.9, 5584.87, 5251.87, 5532.59, 5609.95, 5583.25, 5487.24, 5549.85, 5640.48, 5925.03, 5763.22, 5781.2, 5405.75, 5553.92, 5642.21, 5460.46, 5438.87, 5277.3, 5052.46, 5478.7, 5234.05, 5377.3, 5450.33, 5494.78, 5872.34, 5778.01, 5858.87, 5808.62, 5967.75, 6091.39, 6226.05];
+const samsung = [149300, 145200, 149500, 152300, 152100, 152100, 159500, 162400, 160700, 160500, 150400, 167500, 169100, 159300, 158600, 166400, 165800, 167800, 178600, 181200, 190000, 190100, 193000, 200000, 203500, 218000, 216500, 195100, 172200, 191600, 188200, 173500, 187900, 190000, 187900, 183500, 188700, 193900, 208500, 200500, 199400, 186300, 189700, 189000, 180100, 179700, 176300, 167200, 189600, 178400, 186200, 193100, 196500, 210500, 204000, 206000, 201000, 206500, 211000, 217500];
+const hynix = [764000, 743000, 740000, 755000, 767000, 736000, 800000, 841000, 861000, 909000, 830000, 907000, 900000, 842000, 839000, 887000, 876000, 860000, 888000, 880000, 894000, 949000, 951000, 1005000, 1018000, 1099000, 1061000, 939000, 849000, 941000, 924000, 836000, 938000, 955000, 930000, 910000, 974000, 970000, 1056000, 1013000, 1007000, 933000, 986000, 995000, 933000, 922000, 873000, 807000, 893000, 830000, 876000, 886000, 916000, 1033000, 998000, 1027000, 1040000, 1103000, 1136000, 1155000];
+const samsungRet = [0.27, -2.75, 2.96, 1.87, -0.13, 0.0, 4.87, 1.82, -1.05, -0.12, -6.29, 11.37, 0.96, -5.8, -0.44, 4.92, -0.36, 1.21, 6.44, 1.46, 4.86, 0.05, 1.53, 3.63, 1.75, 7.13, -0.69, -9.88, -11.74, 11.27, -1.77, -7.81, 8.3, 1.12, -1.11, -2.34, 2.83, 2.76, 7.53, -3.84, -0.55, -6.57, 1.83, -0.37, -4.71, -0.22, -1.89, -5.16, 13.4, -5.91, 4.37, 3.71, 1.76, 7.12, -3.09, 0.98, -2.43, 2.74, 2.18, 3.08];
+const hynixRet = [1.06, -2.75, -0.4, 2.03, 1.59, -4.04, 8.7, 5.13, 2.38, 5.57, -8.69, 9.28, -0.77, -6.44, -0.36, 5.72, -1.24, -1.83, 3.26, -0.9, 1.59, 6.15, 0.21, 5.68, 1.29, 7.96, -3.46, -11.5, -9.58, 10.84, -1.81, -9.52, 12.2, 1.81, -2.62, -2.15, 7.03, -0.41, 8.87, -4.07, -0.59, -7.35, 5.68, 0.91, -6.23, -1.18, -5.31, -7.56, 10.66, -7.05, 5.54, 1.14, 3.39, 12.77, -3.39, 2.91, 1.27, 6.06, 2.99, 1.67];
+const credit = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+const forced = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+
+const layoutBase = {
+  margin: {t: 30, r: 50, b: 40, l: 50},
+  font: {family: 'system-ui'},
+  showlegend: true,
+  legend: {orientation: 'h', y: -0.2},
+  paper_bgcolor: 'white',
+  plot_bgcolor: 'white'
+};
+
+if (dates.length > 0) {
+  Plotly.newPlot('chart1', [
+    {x: dates, y: forced, type: 'bar', name: '일일 반대매매(억)',
+      marker: {color: forced.map(v => v >= 600 ? '#A32D2D' : v >= 400 ? '#D85A30' : v >= 200 ? '#BA7517' : '#888')}}
+  ], {...layoutBase, title: {text: '신호 ① 일일 반대매매 추이 (억원)', font: {size: 14}}, yaxis: {title: '억'}});
+
+  Plotly.newPlot('chart2', [
+    {x: dates, y: kospi, type: 'scatter', mode: 'lines', name: '코스피', yaxis: 'y', line: {color: '#185FA5', width: 2}},
+    {x: dates, y: credit, type: 'scatter', mode: 'lines', name: '신용잔고(억)', yaxis: 'y2', line: {color: '#993C1D', width: 2, dash: 'dash'}}
+  ], {...layoutBase, title: {text: '신호 ② 코스피와 신용잔고 동조성', font: {size: 14}},
+       yaxis: {title: '코스피', side: 'left'}, yaxis2: {title: '신용잔고(억)', overlaying: 'y', side: 'right'}});
+
+  Plotly.newPlot('chart3', [
+    {x: dates, y: samsungRet, type: 'bar', name: '삼성전자 일간%', marker: {color: '#185FA5'}},
+    {x: dates, y: hynixRet, type: 'bar', name: 'SK하이닉스 일간%', marker: {color: '#534AB7'}}
+  ], {...layoutBase, title: {text: '신호 ③ 반도체 양대장 일간 변동률 (%)', font: {size: 14}}, barmode: 'group',
+       yaxis: {title: '%', zeroline: true}, shapes: [
+         {type: 'line', xref: 'paper', yref: 'y', x0: 0, x1: 1, y0: -3, y1: -3,
+           line: {color: '#A32D2D', width: 1, dash: 'dot'}}
+       ]});
+} else {
+  document.getElementById('chart1').innerHTML = '<p style="text-align:center;color:#888;padding:40px;">데이터 수집 대기 중...</p>';
+  document.getElementById('chart2').innerHTML = '';
+  document.getElementById('chart3').innerHTML = '';
+}
+</script>
 </body>
 </html>
