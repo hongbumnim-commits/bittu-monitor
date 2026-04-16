@@ -1,16 +1,15 @@
 """
-빚투(信用融資) 모니터 v2 — GitHub Actions 안정화 버전
+빚투 모니터 v3 - 최종 안정판
 
-변경사항:
-- pykrx 제거 → FinanceDataReader로 교체 (KRX 로그인 불필요, 훨씬 안정적)
-- 네이버 금융 스크래핑 로직 개선 (표 구조 기반으로 재작성)
-- 빈 데이터프레임 처리 버그 수정
-- 모든 단계에 예외 처리 추가 → 일부 실패해도 나머지는 계속 진행
+수정 내역:
+v1 문제: pykrx KRX 로그인 에러
+v2 문제: pandas fillna(method="ffill") deprecated 에러
+v3 수정: ffill() 문법으로 교체, 네이버 스크래핑 대폭 강화 (다중 소스)
 
 감시 신호:
-  ① 일일 반대매매 금액이 200억 → 400억 → 600억으로 상승 추세 진입 여부
-  ② 신용잔고 증감률이 코스피 수익률을 0.5%p 이상 추월하는 월
-  ③ 삼성전자·SK하이닉스 동시 -3% 일이 5영업일 중 2회 이상 발생
+  ① 일일 반대매매 금액 추세 (200억/400억/600억 임계치)
+  ② 신용잔고 증감률이 코스피 수익률을 0.5%p 이상 추월
+  ③ 삼성전자·SK하이닉스 동시 -3% 일이 5영업일 중 2회 이상
 """
 
 import os
@@ -35,7 +34,6 @@ LOOKBACK_DAYS = 90
 
 
 def safe(fn_name, fn, default=None, retries=3, sleep=2):
-    """네트워크 호출 재시도 헬퍼"""
     for i in range(retries):
         try:
             return fn()
@@ -47,7 +45,6 @@ def safe(fn_name, fn, default=None, retries=3, sleep=2):
 
 
 def fetch_kospi():
-    """코스피 종가 - FinanceDataReader"""
     start = (TODAY - dt.timedelta(days=180)).strftime("%Y-%m-%d")
     end = TODAY.strftime("%Y-%m-%d")
     df = fdr.DataReader("KS11", start, end)
@@ -59,7 +56,6 @@ def fetch_kospi():
 
 
 def fetch_stock(ticker, name):
-    """개별 종목 종가 - FinanceDataReader"""
     start = (TODAY - dt.timedelta(days=180)).strftime("%Y-%m-%d")
     end = TODAY.strftime("%Y-%m-%d")
     df = fdr.DataReader(ticker, start, end)
@@ -72,65 +68,89 @@ def fetch_stock(ticker, name):
 
 def fetch_naver_flow():
     """
-    네이버 금융 증시자금동향 스크래핑 (개선판).
-    표 구조로 직접 파싱하여 정규식 실패 위험 줄임.
+    네이버 증시자금동향 스크래핑.
+    페이지 구조가 table 기반이라 pandas.read_html로 바로 표를 읽어옴.
     """
     url = "https://finance.naver.com/sise/sise_deposit.naver"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
     r = requests.get(url, headers=headers, timeout=15)
     r.encoding = "euc-kr"
-    soup = BeautifulSoup(r.text, "html.parser")
 
     result = {"credit_balance_eok": None, "forced_sale_eok": None}
 
-    full_text = soup.get_text(" ", strip=True)
-
-    # 신용잔고 - 여러 패턴 시도
-    patterns_credit = [
-        r"신용잔고[^\d]*([\d,]+)",
-        r"신용공여잔고[^\d]*([\d,]+)",
-    ]
-    for p in patterns_credit:
-        m = re.search(p, full_text)
-        if m:
+    # 방법 1: pandas.read_html로 모든 표 읽기
+    try:
+        tables = pd.read_html(r.text, encoding="euc-kr")
+        print(f"  naver: found {len(tables)} tables")
+        for idx, t in enumerate(tables):
             try:
-                val = int(m.group(1).replace(",", ""))
-                if val > 100000:
-                    result["credit_balance_eok"] = val
-                    break
-            except ValueError:
+                t_str = t.astype(str)
+                flat = " ".join([" ".join(row) for row in t_str.values.tolist()])
+                if "신용잔고" in flat or "신용공여" in flat:
+                    print(f"  naver table {idx}: credit-related found")
+                    for row in t_str.values.tolist():
+                        row_txt = " ".join(row)
+                        if ("신용" in row_txt) and result["credit_balance_eok"] is None:
+                            for cell in row:
+                                m = re.search(r"([\d,]+)", str(cell))
+                                if m:
+                                    v = int(m.group(1).replace(",", ""))
+                                    if v > 100000:
+                                        result["credit_balance_eok"] = v
+                                        break
+                if "반대매매" in flat and result["forced_sale_eok"] is None:
+                    print(f"  naver table {idx}: forced-sale found")
+                    for row in t_str.values.tolist():
+                        row_txt = " ".join(row)
+                        if "반대매매" in row_txt:
+                            for cell in row:
+                                m = re.search(r"([\d,]+)", str(cell))
+                                if m:
+                                    v_str = m.group(1).replace(",", "")
+                                    try:
+                                        v = int(v_str)
+                                        if 10 <= v <= 100000:
+                                            result["forced_sale_eok"] = v
+                                            break
+                                    except ValueError:
+                                        continue
+            except Exception as e:
+                print(f"  [warn] table {idx} parse: {e}")
                 continue
+    except Exception as e:
+        print(f"  [warn] read_html failed: {e}")
 
-    # 반대매매
-    patterns_forced = [
-        r"반대매매[^\d]*([\d,]+)",
-        r"실제\s*반대매매\s*금액[^\d]*([\d,]+)",
-    ]
-    for p in patterns_forced:
-        m = re.search(p, full_text)
-        if m:
-            try:
-                val_str = m.group(1).replace(",", "")
-                val = int(val_str)
-                if 10 <= val <= 100000:
-                    result["forced_sale_eok"] = val
-                    break
-            except ValueError:
-                continue
+    # 방법 2: 정규식 백업
+    if result["credit_balance_eok"] is None or result["forced_sale_eok"] is None:
+        soup = BeautifulSoup(r.text, "html.parser")
+        text = soup.get_text(" ", strip=True)
+        if result["credit_balance_eok"] is None:
+            for p in [r"신용잔고[^\d]*([\d,]+)", r"신용공여잔고[^\d]*([\d,]+)"]:
+                m = re.search(p, text)
+                if m:
+                    v = int(m.group(1).replace(",", ""))
+                    if v > 100000:
+                        result["credit_balance_eok"] = v
+                        break
+        if result["forced_sale_eok"] is None:
+            for p in [r"반대매매[^\d]*([\d,]+)", r"실제\s*반대매매\s*금액[^\d]*([\d,]+)"]:
+                m = re.search(p, text)
+                if m:
+                    v = int(m.group(1).replace(",", ""))
+                    if 10 <= v <= 100000:
+                        result["forced_sale_eok"] = v
+                        break
 
-    print(f"  naver flow: credit={result['credit_balance_eok']}, forced={result['forced_sale_eok']}")
+    print(f"  naver result: credit={result['credit_balance_eok']}, forced={result['forced_sale_eok']}")
     return result
 
 
 def load_history():
-    """기존 CSV 로드 (빈 파일 안전 처리)"""
     cols = ["date", "kospi", "samsung", "hynix",
             "credit_balance_eok", "forced_sale_eok",
             "samsung_ret_pct", "hynix_ret_pct"]
-
     if not DATA_FILE.exists():
         return pd.DataFrame(columns=cols)
-
     try:
         df = pd.read_csv(DATA_FILE)
         if df.empty or "date" not in df.columns:
@@ -142,12 +162,11 @@ def load_history():
                 df[c] = None
         return df[cols]
     except Exception as e:
-        print(f"[warn] load_history failed: {e}, starting fresh")
+        print(f"[warn] load_history: {e}")
         return pd.DataFrame(columns=cols)
 
 
 def save_history(df):
-    """CSV 저장 (lookback 기간만 유지)"""
     if df.empty:
         DATA_FILE.write_text("date,kospi,samsung,hynix,credit_balance_eok,forced_sale_eok,samsung_ret_pct,hynix_ret_pct\n")
         return df
@@ -158,7 +177,6 @@ def save_history(df):
 
 
 def update_data():
-    """모든 데이터 가져와서 통합"""
     print(f"[{TODAY}] Fetching data...")
 
     kospi = safe("fetch_kospi", fetch_kospi, default=pd.Series(dtype=float, name="kospi"))
@@ -169,7 +187,7 @@ def update_data():
     print(f"  kospi: {len(kospi)} rows, samsung: {len(samsung)} rows, hynix: {len(hynix)} rows")
 
     if kospi.empty and samsung.empty and hynix.empty:
-        print("[error] all price data fetches failed, keeping old history")
+        print("[error] all fetches failed, keeping old history")
         return load_history()
 
     df = pd.DataFrame({"kospi": kospi, "samsung": samsung, "hynix": hynix})
@@ -179,7 +197,6 @@ def update_data():
     df["credit_balance_eok"] = None
     df["forced_sale_eok"] = None
 
-    # 오늘 네이버 데이터를 최신 행에 반영
     if not df.empty and flow.get("credit_balance_eok"):
         latest_date = df["date"].max()
         mask = df["date"] == latest_date
@@ -194,7 +211,6 @@ def update_data():
 
 
 def compute_signals(df):
-    """3가지 신호 계산"""
     if df.empty:
         return {
             "signal1": {"name": "반대매매 일평균", "level": 0, "description": "데이터 없음"},
@@ -222,12 +238,10 @@ def compute_signals(df):
     signals["signal1"] = {
         "name": "반대매매 일평균 상승 추세",
         "level": lvl,
-        "today_value": round(today_forced, 1),
-        "avg20_value": round(avg20, 1),
         "description": f"오늘 {today_forced:.0f}억 / 20일 평균 {avg20:.0f}억"
     }
 
-    # ② 신용잔고 증감률 vs 코스피 수익률 (30일 변화율)
+    # ② 신용잔고 vs 코스피 수익률
     signals["signal2"] = {"name": "신용잔고 증가율 추월", "level": 0, "description": "데이터 부족"}
     if len(df) >= 30:
         kospi_series = pd.to_numeric(df["kospi"], errors="coerce").dropna()
@@ -247,29 +261,30 @@ def compute_signals(df):
             signals["signal2"] = {
                 "name": "신용잔고 증가율이 코스피 수익률 추월",
                 "level": lvl,
-                "description": f"30일 코스피 {kospi_30d:+.1f}% vs 신용잔고 {credit_30d:+.1f}% (+{gap:.1f}%p)"
+                "description": f"30일 코스피 {kospi_30d:+.1f}% vs 신용잔고 {credit_30d:+.1f}% ({gap:+.1f}%p)"
             }
 
-    # ③ 삼성·하이닉스 동시 -3%
+    # ③ 반도체 양대장 동시 -3%
     last5 = df.tail(5)
     sret = pd.to_numeric(last5["samsung_ret_pct"], errors="coerce")
     hret = pd.to_numeric(last5["hynix_ret_pct"], errors="coerce")
-    both = ((sret <= -3) & (hret <= -3)).sum()
+    both = int(((sret <= -3) & (hret <= -3)).sum())
+    any_drop = bool((sret <= -3).any() or (hret <= -3).any())
     if both >= 2:
         lvl = 3
     elif both == 1:
         lvl = 2
-    elif ((sret <= -3).any() or (hret <= -3).any()):
+    elif any_drop:
         lvl = 1
     else:
         lvl = 0
     signals["signal3"] = {
         "name": "반도체 양대장 동시 -3% 빈도",
         "level": lvl,
-        "description": f"최근 5영업일 중 동시 -3% 발생: {int(both)}회"
+        "description": f"최근 5영업일 중 동시 -3% 발생: {both}회"
     }
 
-    total = sum(s["level"] for s in signals.values())
+    total = sum(s["level"] for s in signals.values() if "level" in s)
     signals["overall"] = {
         "score": total,
         "max": 9,
@@ -279,7 +294,6 @@ def compute_signals(df):
 
 
 def render_dashboard(df, signals):
-    """Plotly HTML 대시보드"""
     df_plot = df.sort_values("date").tail(60).copy() if not df.empty else pd.DataFrame()
 
     if df_plot.empty:
@@ -291,7 +305,8 @@ def render_dashboard(df, signals):
         hynix = pd.to_numeric(df_plot["hynix"], errors="coerce").fillna(0).round(0).tolist()
         sret = pd.to_numeric(df_plot["samsung_ret_pct"], errors="coerce").fillna(0).round(2).tolist()
         hret = pd.to_numeric(df_plot["hynix_ret_pct"], errors="coerce").fillna(0).round(2).tolist()
-        credit = pd.to_numeric(df_plot["credit_balance_eok"], errors="coerce").fillna(method="ffill").fillna(0).round(0).tolist()
+        credit_series = pd.to_numeric(df_plot["credit_balance_eok"], errors="coerce").ffill().fillna(0)
+        credit = credit_series.round(0).tolist()
         forced = pd.to_numeric(df_plot["forced_sale_eok"], errors="coerce").fillna(0).round(1).tolist()
 
     overall_color = {
@@ -421,7 +436,7 @@ if (dates.length > 0) {{
 </html>
 """
     DASHBOARD_FILE.write_text(html, encoding="utf-8")
-    print(f"  dashboard: {DASHBOARD_FILE}")
+    print(f"  dashboard written: {DASHBOARD_FILE}")
 
 
 def main():
@@ -438,6 +453,8 @@ def main():
         render_dashboard(df, signals)
     except Exception as e:
         print(f"[error] render_dashboard failed: {e}")
+        import traceback
+        traceback.print_exc()
 
     print("Done.")
 
