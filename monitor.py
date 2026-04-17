@@ -92,6 +92,35 @@ def fetch_ust10y_fred():
     return s.rename("ust10y").dropna()
 
 
+def fetch_cor1m():
+    """
+    CBOE 1-Month Implied Correlation Index (^COR1M).
+    S&P 500 구성종목 간 내재상관 — '모두 같이 움직일 확률'을 옵션으로 측정.
+    높음(60+) = 시스템 공포, 낮음(<20) = 쏠림 극한 (역설적 위험).
+    Yahoo Finance 차트 API로 직접 조회 (FDR에서 제공 여부 불확실).
+    """
+    import urllib.parse
+    end_ts = int(dt.datetime.now(KST).timestamp())
+    start_ts = end_ts - LOOKBACK_DAYS * 86400
+    symbol = urllib.parse.quote("^COR1M")
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?period1={start_ts}&period2={end_ts}&interval=1d"
+    headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"}
+    r = requests.get(url, headers=headers, timeout=20)
+    r.raise_for_status()
+    data = r.json()
+    try:
+        result = data["chart"]["result"][0]
+        timestamps = result["timestamp"]
+        closes = result["indicators"]["quote"][0]["close"]
+    except (KeyError, IndexError, TypeError) as e:
+        print(f"  [warn] cor1m parse: {e}")
+        return pd.Series(dtype=float, name="cor1m")
+    dates = [dt.datetime.fromtimestamp(t, tz=dt.timezone.utc).date() for t in timestamps]
+    s = pd.Series(closes, index=dates, name="cor1m")
+    s = s.dropna()
+    return s
+
+
 def fetch_naver_deposit():
     url = "https://finance.naver.com/sise/sise_deposit.naver"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -212,7 +241,7 @@ MAIN_COLS = [
     "kospi", "kosdaq", "samsung", "hynix", "vkospi",
     "credit_balance_eok", "forced_sale_eok", "foreign_net_eok",
     "samsung_ret_pct", "hynix_ret_pct",
-    "sp500", "nasdaq", "vix", "nvda", "ust10y",
+    "sp500", "nasdaq", "vix", "nvda", "ust10y", "cor1m",
     "sec_반도체", "sec_방산조선", "sec_바이오", "sec_2차전지", "sec_금융",
 ]
 
@@ -260,6 +289,7 @@ def update_data():
     vix = safe("vix", lambda: fetch_fdr("VIX", "vix"), default=pd.Series(dtype=float, name="vix"))
     nvda = safe("nvda", lambda: fetch_fdr("NVDA", "nvda"), default=pd.Series(dtype=float, name="nvda"))
     ust10y = safe("ust10y_fred", fetch_ust10y_fred, default=pd.Series(dtype=float, name="ust10y"))
+    cor1m = safe("cor1m", fetch_cor1m, default=pd.Series(dtype=float, name="cor1m"))
 
     sectors = {}
     for name, tickers in SECTOR_BASKETS.items():
@@ -273,6 +303,7 @@ def update_data():
     series_dict = {
         "kospi": kospi, "kosdaq": kosdaq, "samsung": samsung, "hynix": hynix,
         "sp500": sp500, "nasdaq": nasdaq, "vix": vix, "nvda": nvda, "ust10y": ust10y,
+        "cor1m": cor1m,
         **sectors
     }
     df = pd.DataFrame(series_dict)
@@ -450,6 +481,33 @@ def compute_signals(df):
             "name": "10년물 국채금리 1주 변화",
             "level": level_from_gap(abs(delta) * 100, [15, 25, 40]),
             "description": f"현재 {cur:.2f}% / 1주 변화 {delta*100:+.0f}bp"
+        }
+
+    # US6: CBOE 1-Month Implied Correlation (COR1M)
+    # 양방향 경고 지표 — 높을 때(시스템 공포)와 낮을 때(쏠림 극한) 모두 위험 신호
+    cor_ser = pd.to_numeric(df["cor1m"], errors="coerce").dropna()
+    us["US6"] = {"name": "내재상관 COR1M", "level": 0, "description": "데이터 수집 중"}
+    if len(cor_ser):
+        v = float(cor_ser.iloc[-1])
+        # 양방향 위험 판정
+        if v >= 60:
+            lvl = 3; why = "시스템 공포 (동반 하락 예상)"
+        elif v >= 45:
+            lvl = 2; why = "상관 급등 — 섹터 차별화 소멸"
+        elif v >= 30:
+            lvl = 1; why = "상승 추세 — 주의 필요"
+        elif v <= 10:
+            lvl = 3; why = "쏠림 극한 — 변동성 폭발 위험"
+        elif v <= 15:
+            lvl = 2; why = "극도의 쏠림 — 경계"
+        elif v <= 20:
+            lvl = 1; why = "낮음 — 소수 종목 주도"
+        else:
+            lvl = 0; why = "정상 범위 (20~30)"
+        us["US6"] = {
+            "name": "CBOE 1M 내재상관 (COR1M)",
+            "level": lvl,
+            "description": f"현재 {v:.1f} · {why}"
         }
 
     kr_score = sum(s["level"] for s in kr.values())
@@ -639,6 +697,7 @@ def render_dashboard(df, signals, regime_kr, regime_us):
         "sp500": col("sp500"), "sp500_ma200": ma_series("sp500", 200),
         "nasdaq": col("nasdaq"), "nasdaq_ma200": ma_series("nasdaq", 200),
         "vix": col("vix"), "nvda": col("nvda"), "ust10y": col("ust10y"),
+        "cor1m": col("cor1m"),
         "sec_반도체": col_raw("sec_반도체"),
         "sec_방산조선": col_raw("sec_방산조선"),
         "sec_바이오": col_raw("sec_바이오"),
@@ -771,6 +830,7 @@ def render_dashboard(df, signals, regime_kr, regime_us):
     <div class="chart"><div id="c_us_nvda" style="height:280px;"></div></div>
   </div>
   <div class="chart"><div id="c_us_rate" style="height:280px;"></div></div>
+  <div class="chart"><div id="c_us_cor1m" style="height:300px;"></div></div>
 </div>
 
 <div class="footer">
@@ -864,6 +924,30 @@ plot('c_us_nvda', [
 plot('c_us_rate', [
   {{x: D.dates, y: D.ust10y, type: 'scatter', mode: 'lines', name: '10Y', line: {{color: '#BA7517', width: 2}}}}
 ], '미국 10년물 국채금리 (%)');
+
+plot('c_us_cor1m', [
+  {{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'COR1M',
+    line: {{color: '#534AB7', width: 2}}, fillcolor: 'rgba(83,74,183,0.08)'}}
+], 'CBOE 1개월 내재상관 (COR1M) — 낮을수록 쏠림, 높을수록 시스템 공포', {{
+  shapes: [
+    {{type: 'rect', xref: 'paper', x0: 0, x1: 1, y0: 60, y1: 100,
+      fillcolor: 'rgba(163,45,45,0.08)', line: {{width: 0}}}},
+    {{type: 'rect', xref: 'paper', x0: 0, x1: 1, y0: 0, y1: 15,
+      fillcolor: 'rgba(186,117,23,0.10)', line: {{width: 0}}}},
+    {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 60, y1: 60,
+      line: {{color: '#A32D2D', width: 1, dash: 'dot'}}}},
+    {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 20, y1: 20,
+      line: {{color: '#1D9E75', width: 1, dash: 'dot'}}}},
+    {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 15, y1: 15,
+      line: {{color: '#BA7517', width: 1, dash: 'dot'}}}}
+  ],
+  annotations: [
+    {{xref: 'paper', yref: 'y', x: 0.02, y: 62, text: '시스템 공포 (60+)', showarrow: false,
+      font: {{size: 10, color: '#A32D2D'}}, xanchor: 'left'}},
+    {{xref: 'paper', yref: 'y', x: 0.02, y: 12, text: '쏠림 극한 (&lt;15)', showarrow: false,
+      font: {{size: 10, color: '#BA7517'}}, xanchor: 'left'}}
+  ]
+}});
 
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', e => {{
   document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
