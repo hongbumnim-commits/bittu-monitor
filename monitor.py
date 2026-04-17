@@ -1,12 +1,15 @@
 """
-빚투 모니터 v5 - 추세 전망 + 에러 수정
+빚투 모니터 v5 - 추세 전망 + 에러 수정 + 차트 가독성 대폭 개선 (Base 100)
 
 v4 에러 수정:
   - VKOSPI: FinanceDataReader로 안 됨 → 네이버 스크래핑
   - US 10Y: 야후 차트 경로 변경 → FRED API 사용
 
-신규: 시장 추세 전망 (Regime Analysis)
-  단기 1~3개월 / 중기 3~6개월 / 장기 6~12개월 각각 강세/중립/약세 판정
+신규 반영: 
+  - 네이버 크롤링 봇 차단 우회 (User-Agent 및 헤더 강화)
+  - 차트 출력 기간 120일 -> 350일 확장
+  - 반도체 양대장(삼성/하이닉스) 일간 변동률 -> 코스피 대비 Base 100 누적 추세선으로 변경
+  - 업종 바구니 일간 변동률 -> 복리 누적 수익률(Base 100) 차트로 변경
 """
 
 import os
@@ -38,6 +41,12 @@ SECTOR_BASKETS = {
     "금융":     ["105560", "055550", "086790", "316140"],
 }
 
+# 네이버 스크래핑 차단 우회를 위한 공통 헤더
+NAVER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Referer": "https://finance.naver.com/",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+}
 
 def safe(fn_name, fn, default=None, retries=3, sleep=2):
     for i in range(retries):
@@ -63,8 +72,7 @@ def fetch_fdr(symbol, name=None, days=LOOKBACK_DAYS):
 
 def fetch_vkospi_naver():
     url = "https://finance.naver.com/sise/sise_index.naver?code=VKOSPI"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    r = requests.get(url, headers=headers, timeout=15)
+    r = requests.get(url, headers=NAVER_HEADERS, timeout=15)
     r.encoding = "euc-kr"
     soup = BeautifulSoup(r.text, "html.parser")
     try:
@@ -92,39 +100,9 @@ def fetch_ust10y_fred():
     return s.rename("ust10y").dropna()
 
 
-def fetch_cor1m():
-    """
-    CBOE 1-Month Implied Correlation Index (^COR1M).
-    S&P 500 구성종목 간 내재상관 — '모두 같이 움직일 확률'을 옵션으로 측정.
-    높음(60+) = 시스템 공포, 낮음(<20) = 쏠림 극한 (역설적 위험).
-    Yahoo Finance 차트 API로 직접 조회 (FDR에서 제공 여부 불확실).
-    """
-    import urllib.parse
-    end_ts = int(dt.datetime.now(KST).timestamp())
-    start_ts = end_ts - LOOKBACK_DAYS * 86400
-    symbol = urllib.parse.quote("^COR1M")
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?period1={start_ts}&period2={end_ts}&interval=1d"
-    headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"}
-    r = requests.get(url, headers=headers, timeout=20)
-    r.raise_for_status()
-    data = r.json()
-    try:
-        result = data["chart"]["result"][0]
-        timestamps = result["timestamp"]
-        closes = result["indicators"]["quote"][0]["close"]
-    except (KeyError, IndexError, TypeError) as e:
-        print(f"  [warn] cor1m parse: {e}")
-        return pd.Series(dtype=float, name="cor1m")
-    dates = [dt.datetime.fromtimestamp(t, tz=dt.timezone.utc).date() for t in timestamps]
-    s = pd.Series(closes, index=dates, name="cor1m")
-    s = s.dropna()
-    return s
-
-
 def fetch_naver_deposit():
     url = "https://finance.naver.com/sise/sise_deposit.naver"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    r = requests.get(url, headers=headers, timeout=20)
+    r = requests.get(url, headers=NAVER_HEADERS, timeout=20)
     r.encoding = "euc-kr"
     result = {"credit_balance_eok": None, "forced_sale_eok": None}
     try:
@@ -184,8 +162,7 @@ def fetch_naver_deposit():
 
 def fetch_naver_foreign_flow():
     url = "https://finance.naver.com/sise/investorDealTrendDay.naver"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    r = requests.get(url, headers=headers, timeout=15)
+    r = requests.get(url, headers=NAVER_HEADERS, timeout=15)
     r.encoding = "euc-kr"
     result = {}
     try:
@@ -226,14 +203,19 @@ def fetch_naver_foreign_flow():
 
 def fetch_sector_basket(tickers):
     closes = []
+    # 데이터 조회 기간을 넉넉히 잡습니다 (누적 수익률 계산을 위해)
     for t in tickers:
-        s = safe(f"ticker_{t}", lambda tt=t: fetch_fdr(tt, name=tt, days=60), default=pd.Series(dtype=float))
+        s = safe(f"ticker_{t}", lambda tt=t: fetch_fdr(tt, name=tt, days=400), default=pd.Series(dtype=float))
         if not s.empty:
             closes.append(s)
     if not closes:
         return pd.Series(dtype=float)
     df = pd.concat(closes, axis=1).ffill()
-    return (df.pct_change() * 100).mean(axis=1)
+    
+    # 일간 변동률 평균 후 복리 누적 계산 (Base 100)
+    daily_ret = df.pct_change().mean(axis=1).fillna(0)
+    cum_index = (1 + daily_ret).cumprod() * 100
+    return cum_index
 
 
 MAIN_COLS = [
@@ -241,7 +223,7 @@ MAIN_COLS = [
     "kospi", "kosdaq", "samsung", "hynix", "vkospi",
     "credit_balance_eok", "forced_sale_eok", "foreign_net_eok",
     "samsung_ret_pct", "hynix_ret_pct",
-    "sp500", "nasdaq", "vix", "nvda", "ust10y", "cor1m",
+    "sp500", "nasdaq", "vix", "nvda", "ust10y",
     "sec_반도체", "sec_방산조선", "sec_바이오", "sec_2차전지", "sec_금융",
 ]
 
@@ -289,7 +271,6 @@ def update_data():
     vix = safe("vix", lambda: fetch_fdr("VIX", "vix"), default=pd.Series(dtype=float, name="vix"))
     nvda = safe("nvda", lambda: fetch_fdr("NVDA", "nvda"), default=pd.Series(dtype=float, name="nvda"))
     ust10y = safe("ust10y_fred", fetch_ust10y_fred, default=pd.Series(dtype=float, name="ust10y"))
-    cor1m = safe("cor1m", fetch_cor1m, default=pd.Series(dtype=float, name="cor1m"))
 
     sectors = {}
     for name, tickers in SECTOR_BASKETS.items():
@@ -303,7 +284,6 @@ def update_data():
     series_dict = {
         "kospi": kospi, "kosdaq": kosdaq, "samsung": samsung, "hynix": hynix,
         "sp500": sp500, "nasdaq": nasdaq, "vix": vix, "nvda": nvda, "ust10y": ust10y,
-        "cor1m": cor1m,
         **sectors
     }
     df = pd.DataFrame(series_dict)
@@ -483,33 +463,6 @@ def compute_signals(df):
             "description": f"현재 {cur:.2f}% / 1주 변화 {delta*100:+.0f}bp"
         }
 
-    # US6: CBOE 1-Month Implied Correlation (COR1M)
-    # 양방향 경고 지표 — 높을 때(시스템 공포)와 낮을 때(쏠림 극한) 모두 위험 신호
-    cor_ser = pd.to_numeric(df["cor1m"], errors="coerce").dropna()
-    us["US6"] = {"name": "내재상관 COR1M", "level": 0, "description": "데이터 수집 중"}
-    if len(cor_ser):
-        v = float(cor_ser.iloc[-1])
-        # 양방향 위험 판정
-        if v >= 60:
-            lvl = 3; why = "시스템 공포 (동반 하락 예상)"
-        elif v >= 45:
-            lvl = 2; why = "상관 급등 — 섹터 차별화 소멸"
-        elif v >= 30:
-            lvl = 1; why = "상승 추세 — 주의 필요"
-        elif v <= 10:
-            lvl = 3; why = "쏠림 극한 — 변동성 폭발 위험"
-        elif v <= 15:
-            lvl = 2; why = "극도의 쏠림 — 경계"
-        elif v <= 20:
-            lvl = 1; why = "낮음 — 소수 종목 주도"
-        else:
-            lvl = 0; why = "정상 범위 (20~30)"
-        us["US6"] = {
-            "name": "CBOE 1M 내재상관 (COR1M)",
-            "level": lvl,
-            "description": f"현재 {v:.1f} · {why}"
-        }
-
     kr_score = sum(s["level"] for s in kr.values())
     us_score = sum(s["level"] for s in us.values())
 
@@ -665,7 +618,8 @@ def render_regime_block(regime, title):
 
 
 def render_dashboard(df, signals, regime_kr, regime_us):
-    df_plot = df.sort_values("date").tail(120).copy() if not df.empty else pd.DataFrame()
+    # tail(350) 적용으로 시각화 기간 연장
+    df_plot = df.sort_values("date").tail(350).copy() if not df.empty else pd.DataFrame()
 
     def col(c):
         if df_plot.empty or c not in df_plot.columns:
@@ -684,20 +638,19 @@ def render_dashboard(df, signals, regime_kr, regime_us):
             return []
         full = pd.to_numeric(df[c], errors="coerce")
         ma_full = full.rolling(window).mean()
-        return ma_full.tail(120).fillna(0).round(2).tolist()
+        return ma_full.tail(350).fillna(0).round(2).tolist()
 
     js_data = {
         "dates": dates,
         "kospi": col("kospi"), "kospi_ma200": ma_series("kospi", 200),
         "kosdaq": col("kosdaq"),
-        "samsung_ret": col_raw("samsung_ret_pct"), "hynix_ret": col_raw("hynix_ret_pct"),
+        "samsung": col("samsung"), "hynix": col("hynix"), # Base 100 계산을 위해 원본 주가 추가
         "vkospi": col_raw("vkospi"),
         "credit": col("credit_balance_eok"), "forced": col_raw("forced_sale_eok"),
         "foreign": col_raw("foreign_net_eok"),
         "sp500": col("sp500"), "sp500_ma200": ma_series("sp500", 200),
         "nasdaq": col("nasdaq"), "nasdaq_ma200": ma_series("nasdaq", 200),
         "vix": col("vix"), "nvda": col("nvda"), "ust10y": col("ust10y"),
-        "cor1m": col("cor1m"),
         "sec_반도체": col_raw("sec_반도체"),
         "sec_방산조선": col_raw("sec_방산조선"),
         "sec_바이오": col_raw("sec_바이오"),
@@ -830,7 +783,6 @@ def render_dashboard(df, signals, regime_kr, regime_us):
     <div class="chart"><div id="c_us_nvda" style="height:280px;"></div></div>
   </div>
   <div class="chart"><div id="c_us_rate" style="height:280px;"></div></div>
-  <div class="chart"><div id="c_us_cor1m" style="height:300px;"></div></div>
 </div>
 
 <div class="footer">
@@ -886,13 +838,16 @@ plot('c_kr_foreign', [{{
   marker: {{color: D.foreign.map(v => v < 0 ? '#A32D2D' : '#1D9E75')}}
 }}], '외국인 일별 순매수/매도 (코스피+코스닥)');
 
+function normalize(arr) {{
+  const first = arr.find(v => v > 0);
+  return arr.map(v => v > 0 ? (v / first) * 100 : null);
+}}
+
 plot('c_kr_semi', [
-  {{x: D.dates, y: D.samsung_ret, type: 'bar', name: '삼성전자 %', marker: {{color: '#185FA5'}}}},
-  {{x: D.dates, y: D.hynix_ret, type: 'bar', name: 'SK하이닉스 %', marker: {{color: '#534AB7'}}}}
-], '반도체 양대장 일간 변동률', {{
-  barmode: 'group',
-  shapes: [{{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: -3, y1: -3, line: {{color: '#A32D2D', width: 1, dash: 'dot'}}}}]
-}});
+  {{x: D.dates, y: normalize(D.kospi), type: 'scatter', mode: 'lines', name: '코스피', line: {{color: '#888', width: 2, dash: 'dot'}}}},
+  {{x: D.dates, y: normalize(D.samsung), type: 'scatter', mode: 'lines', name: '삼성전자', line: {{color: '#185FA5', width: 2}}}},
+  {{x: D.dates, y: normalize(D.hynix), type: 'scatter', mode: 'lines', name: 'SK하이닉스', line: {{color: '#534AB7', width: 2}}}}
+], '코스피 vs 반도체 양대장 추세 (시작점=100)');
 
 plot('c_kr_sector', [
   {{x: D.dates, y: D.sec_반도체, type: 'scatter', mode: 'lines', name: '반도체', line: {{color: '#185FA5'}}}},
@@ -900,7 +855,7 @@ plot('c_kr_sector', [
   {{x: D.dates, y: D.sec_바이오, type: 'scatter', mode: 'lines', name: '바이오', line: {{color: '#1D9E75'}}}},
   {{x: D.dates, y: D.sec_2차전지, type: 'scatter', mode: 'lines', name: '2차전지', line: {{color: '#BA7517'}}}},
   {{x: D.dates, y: D.sec_금융, type: 'scatter', mode: 'lines', name: '금융', line: {{color: '#888'}}}}
-], '업종 바구니 일간 수익률');
+], '업종 바구니 누적 추세 (Base 100)');
 
 plot('c_us_sp', [
   {{x: D.dates, y: D.sp500, type: 'scatter', mode: 'lines', name: 'S&P 500', line: {{color: '#185FA5', width: 2}}}},
@@ -924,30 +879,6 @@ plot('c_us_nvda', [
 plot('c_us_rate', [
   {{x: D.dates, y: D.ust10y, type: 'scatter', mode: 'lines', name: '10Y', line: {{color: '#BA7517', width: 2}}}}
 ], '미국 10년물 국채금리 (%)');
-
-plot('c_us_cor1m', [
-  {{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'COR1M',
-    line: {{color: '#534AB7', width: 2}}, fillcolor: 'rgba(83,74,183,0.08)'}}
-], 'CBOE 1개월 내재상관 (COR1M) — 낮을수록 쏠림, 높을수록 시스템 공포', {{
-  shapes: [
-    {{type: 'rect', xref: 'paper', x0: 0, x1: 1, y0: 60, y1: 100,
-      fillcolor: 'rgba(163,45,45,0.08)', line: {{width: 0}}}},
-    {{type: 'rect', xref: 'paper', x0: 0, x1: 1, y0: 0, y1: 15,
-      fillcolor: 'rgba(186,117,23,0.10)', line: {{width: 0}}}},
-    {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 60, y1: 60,
-      line: {{color: '#A32D2D', width: 1, dash: 'dot'}}}},
-    {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 20, y1: 20,
-      line: {{color: '#1D9E75', width: 1, dash: 'dot'}}}},
-    {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 15, y1: 15,
-      line: {{color: '#BA7517', width: 1, dash: 'dot'}}}}
-  ],
-  annotations: [
-    {{xref: 'paper', yref: 'y', x: 0.02, y: 62, text: '시스템 공포 (60+)', showarrow: false,
-      font: {{size: 10, color: '#A32D2D'}}, xanchor: 'left'}},
-    {{xref: 'paper', yref: 'y', x: 0.02, y: 12, text: '쏠림 극한 (&lt;15)', showarrow: false,
-      font: {{size: 10, color: '#BA7517'}}, xanchor: 'left'}}
-  ]
-}});
 
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', e => {{
   document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
