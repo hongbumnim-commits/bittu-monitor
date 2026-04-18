@@ -41,6 +41,94 @@ SECTOR_BASKETS = {
 }
 
 
+GLOBAL_LIQUIDITY_SERIES = {
+    "WALCL": "fed_assets",
+    "ECBASSETSW": "ecb_assets",
+    "JPNASSETS": "boj_assets",
+}
+
+def fetch_stooq_series(symbol, name=None, days=LOOKBACK_DAYS):
+    """Stooq CSV fallback. 예: usdjpy -> USD/JPY"""
+    from io import StringIO
+    urls = [
+        f"https://stooq.com/q/d/l/?s={symbol}&i=d",
+        f"https://stooq.com/q/d/l/?s={symbol}&d1={(TODAY - dt.timedelta(days=days)).strftime('%Y%m%d')}&d2={TODAY.strftime('%Y%m%d')}&i=d",
+    ]
+    headers = {"User-Agent": "Mozilla/5.0", "Accept-Language": "en-US,en;q=0.9"}
+    for url in urls:
+        try:
+            r = requests.get(url, headers=headers, timeout=20)
+            if r.status_code != 200 or len(r.text) < 20:
+                continue
+            df = pd.read_csv(StringIO(r.text))
+            if df.empty or "Date" not in df.columns or "Close" not in df.columns:
+                continue
+            df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+            df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
+            df = df.dropna(subset=["Date", "Close"])
+            if df.empty:
+                continue
+            cutoff = TODAY - dt.timedelta(days=days)
+            df = df[df["Date"].dt.date >= cutoff]
+            if df.empty:
+                continue
+            s = pd.Series(df["Close"].values, index=df["Date"].dt.date, name=name or symbol)
+            print(f"  {name or symbol} via stooq: {len(s)} rows, latest {float(s.iloc[-1]):.2f}")
+            return s
+        except Exception as e:
+            print(f"  [warn] stooq {symbol}: {e}")
+    return pd.Series(dtype=float, name=name or symbol)
+
+
+def fetch_fred_series(series_id, name=None, days=LOOKBACK_DAYS * 3):
+    start = (TODAY - dt.timedelta(days=days)).strftime("%Y-%m-%d")
+    try:
+        df = fdr.DataReader(f"FRED:{series_id}", start)
+        if df is None or df.empty:
+            return pd.Series(dtype=float, name=name or series_id)
+        col = df.columns[0]
+        s = pd.to_numeric(df[col], errors="coerce").dropna()
+        if s.empty:
+            return pd.Series(dtype=float, name=name or series_id)
+        s.index = pd.to_datetime(s.index).date
+        return s.rename(name or series_id)
+    except Exception as e:
+        print(f"  [warn] fred {series_id}: {e}")
+        return pd.Series(dtype=float, name=name or series_id)
+
+
+def fetch_global_liquidity_proxy():
+    """A안: 주요 중앙은행 자산 합계(정규화 proxy) + USDJPY(Stooq 우선)."""
+    series = {}
+    for sid, nm in GLOBAL_LIQUIDITY_SERIES.items():
+        s = fetch_fred_series(sid, nm)
+        if not s.empty:
+            series[nm] = s
+    proxy = pd.Series(dtype=float, name="global_liquidity")
+    if series:
+        df = pd.concat(series.values(), axis=1).sort_index().ffill().dropna(how="all")
+        if not df.empty:
+            normalized = []
+            for c in df.columns:
+                col = pd.to_numeric(df[c], errors="coerce").dropna()
+                if col.empty or col.iloc[0] == 0:
+                    continue
+                normalized.append(col / col.iloc[0] * 100)
+            if normalized:
+                proxy = pd.concat(normalized, axis=1).mean(axis=1).rename("global_liquidity")
+    usdjpy = fetch_stooq_series("usdjpy", "usdjpy", days=LOOKBACK_DAYS * 3)
+    if usdjpy.empty:
+        for sym in ["USDJPY", "JPY=X"]:
+            try:
+                s = fetch_fdr(sym, "usdjpy", days=LOOKBACK_DAYS * 3)
+                if not s.empty:
+                    usdjpy = s.rename("usdjpy")
+                    break
+            except Exception:
+                pass
+    return {"global_liquidity": proxy, "usdjpy": usdjpy}
+
+
 def safe(fn_name, fn, default=None, retries=3, sleep=2):
     for i in range(retries):
         try:
@@ -827,6 +915,8 @@ def fetch_us_margin_debt():
 # ================================================================
 
 M7_PLUS_STOCKS = {
+    "SP500": "S&P500",
+    "IXIC": "나스닥",
     "AAPL":  "애플",
     "MSFT":  "마이크로소프트",
     "GOOGL": "구글",
@@ -840,17 +930,17 @@ M7_PLUS_STOCKS = {
 
 
 def fetch_m7_plus_basket():
-    """M7 + AVGO + TSM 개별 종목 + S&P500. dict {ticker: Series} 반환."""
+    """M7 + AVGO + TSM 개별 종목 + S&P500/나스닥. dict {ticker: Series} 반환."""
     result = {}
-    sp500 = safe("sp500_basket", lambda: fetch_fdr("US500", "sp500"), default=pd.Series(dtype=float))
-    if not sp500.empty:
-        result["SP500"] = sp500
     for ticker in M7_PLUS_STOCKS.keys():
-        s = safe(f"m7_{ticker}", lambda t=ticker: fetch_fdr(t, name=t, days=LOOKBACK_DAYS),
+        source_symbol = "US500" if ticker == "SP500" else ticker
+        if ticker == "IXIC":
+            source_symbol = "IXIC"
+        s = safe(f"m7_{ticker}", lambda ts=source_symbol, nm=ticker: fetch_fdr(ts, nm, days=LOOKBACK_DAYS),
                  default=pd.Series(dtype=float))
         if not s.empty:
-            result[ticker] = s
-    print(f"  m7+ basket: {len(result)}/{len(M7_PLUS_STOCKS) + 1} tickers")
+            result[ticker] = s.rename(ticker)
+    print(f"  m7+ basket: {len(result)} tickers")
     return result
 
 
@@ -1083,11 +1173,14 @@ def update_data():
     us_margin_debt = safe("us_margin_debt", fetch_us_margin_debt, default={})
     m7_basket = safe("m7_plus", fetch_m7_plus_basket, default={})
     kr_foreign_holding = safe("foreign_holding_kr", fetch_foreign_holding_kr, default={})
+    gl = safe("global_liquidity", fetch_global_liquidity_proxy, default={"global_liquidity": pd.Series(dtype=float), "usdjpy": pd.Series(dtype=float)})
 
     extras = {
         "us_margin_debt": us_margin_debt,         # {date: bil_usd}  월별
         "m7_basket": m7_basket,                   # {ticker: Series}
         "kr_foreign_holding": kr_foreign_holding, # {date: {amount_trillion, pct}}  월별
+        "global_liquidity": gl.get("global_liquidity", pd.Series(dtype=float)),
+        "usdjpy": gl.get("usdjpy", pd.Series(dtype=float)),
     }
     return combined, extras
 
@@ -1593,6 +1686,33 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     js_data["m7_dates"] = m7_dates
     js_data["m7_series"] = m7_series
 
+    # 2-1. 글로벌 유동성 proxy + 달러-엔
+    gl_proxy = extras.get("global_liquidity", pd.Series(dtype=float))
+    usdjpy = extras.get("usdjpy", pd.Series(dtype=float))
+    gl_dates = []
+    gl_proxy_vals = []
+    usdjpy_vals = []
+    if (isinstance(gl_proxy, pd.Series) and not gl_proxy.empty) or (isinstance(usdjpy, pd.Series) and not usdjpy.empty):
+        anchor = None
+        if isinstance(gl_proxy, pd.Series) and not gl_proxy.empty:
+            anchor = gl_proxy
+        elif isinstance(usdjpy, pd.Series) and not usdjpy.empty:
+            anchor = usdjpy
+        if anchor is not None:
+            cutoff = TODAY - dt.timedelta(days=LOOKBACK_DAYS * 3)
+            anchor = anchor[anchor.index >= cutoff]
+            if not anchor.empty:
+                gl_dates = [d.strftime("%Y-%m-%d") for d in anchor.index]
+                if isinstance(gl_proxy, pd.Series) and not gl_proxy.empty:
+                    gp = gl_proxy[gl_proxy.index >= cutoff].reindex(anchor.index).ffill().bfill()
+                    gl_proxy_vals = [None if pd.isna(v) else round(float(v), 2) for v in gp]
+                if isinstance(usdjpy, pd.Series) and not usdjpy.empty:
+                    uj = usdjpy[usdjpy.index >= cutoff].reindex(anchor.index).ffill().bfill()
+                    usdjpy_vals = [None if pd.isna(v) else round(float(v), 2) for v in uj]
+    js_data["gl_dates"] = gl_dates
+    js_data["global_liquidity"] = gl_proxy_vals
+    js_data["usdjpy"] = usdjpy_vals
+
     # 3. 한국 외국인 보유금액 + 비중 (월별)
     fhold = extras.get("kr_foreign_holding", {}) or {}
     if fhold:
@@ -1722,6 +1842,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
   <div class="chart"><div id="c_us_cor1m" style="height:300px;"></div></div>
   <div class="chart"><div id="c_us_margin" style="height:320px;"></div></div>
   <div class="chart"><div id="c_us_m7" style="height:460px;"></div></div>
+  <div class="chart"><div id="c_us_gl" style="height:380px;"></div></div>
 </div>
 
 <div class="footer">데이터: FinanceDataReader, FRED(미국 10Y), 네이버 금융/공공데이터/보조 스크래핑 · 투자 권유 아님</div>
@@ -1868,6 +1989,7 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
   try {{
     const colorMap = {{
       'SP500': '#888',
+      'IXIC':  '#3b5bfd',
       'AAPL':  '#185FA5',
       'MSFT':  '#0078D4',
       'GOOGL': '#34A853',
@@ -1880,6 +2002,7 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
     }};
     const labelMap = {{
       'SP500': 'S&P500',
+      'IXIC':  '나스닥',
       'AAPL':  '애플 AAPL',
       'MSFT':  'MS MSFT',
       'GOOGL': '구글 GOOGL',
@@ -1890,12 +2013,13 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
       'AVGO':  '브로드컴 AVGO',
       'TSM':   'TSMC TSM'
     }};
-    const order = ['SP500', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA', 'AVGO', 'TSM'];
+    const order = ['SP500', 'IXIC', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA', 'AVGO', 'TSM'];
     const traces = [];
     order.forEach(t => {{
       const vals = D.m7_series[t];
       if (!vals || !hasValues(vals)) return;
       const isSP = t === 'SP500';
+      const isNas = t === 'IXIC';
       traces.push({{
         x: D.m7_dates,
         y: vals,
@@ -1905,19 +2029,39 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
         connectgaps: true,
         line: {{
           color: colorMap[t] || '#666',
-          width: isSP ? 2.0 : 1.9,
-          dash: isSP ? 'dot' : 'solid'
+          width: (isSP || isNas) ? 2.0 : 1.9,
+          dash: isSP ? 'dot' : (isNas ? 'dash' : 'solid')
         }}
       }});
     }});
     if (traces.length === 0) {{ showEmpty(id); return; }}
     Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
-      title: {{text: 'M7 + 브로드컴 + TSMC vs S&P500 누적 추세 (Base 100)', font: {{size: 14}}}},
+      title: {{text: 'M7 + 브로드컴 + TSMC + 나스닥 vs S&P500 누적 추세 (Base 100)', font: {{size: 14}}}},
       yaxis: {{title: 'Base 100'}},
       legend: {{orientation: 'h', y: -0.15, x: 0, xanchor: 'left'}},
       margin: {{t: 40, r: 50, b: 60, l: 55}}
     }}), {{displayModeBar: false, responsive: true}});
   }} catch (e) {{ console.error('m7 plot:', e); showEmpty(id); }}
+}})();
+
+// === 글로벌 유동성 Proxy vs 달러-엔 ===
+(function() {{
+  const id = 'c_us_gl';
+  const el = document.getElementById(id);
+  if (!el) return;
+  const hasGL = D.gl_dates && D.gl_dates.length > 0 && hasValues(D.global_liquidity);
+  const hasUJ = D.gl_dates && D.gl_dates.length > 0 && hasValues(D.usdjpy);
+  if (!hasGL && !hasUJ) {{ showEmpty(id); return; }}
+  try {{
+    const traces = [];
+    if (hasGL) traces.push({{x:D.gl_dates,y:D.global_liquidity,type:'scatter',mode:'lines',name:'글로벌 유동성 proxy',connectgaps:true,line:{{color:'#185FA5',width:2.8}}}});
+    if (hasUJ) traces.push({{x:D.gl_dates,y:D.usdjpy,type:'scatter',mode:'lines',name:'달러-엔',yaxis:'y2',connectgaps:true,line:{{color:'#9ca3af',width:2.1}}}});
+    Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
+      title:{{text:'글로벌 유동성 Proxy vs 달러-엔', font:{{size:14}}}},
+      yaxis:{{title:'Proxy (Base 100)'}},
+      yaxis2:{{title:'엔', overlaying:'y', side:'right'}}
+    }}), {{displayModeBar:false, responsive:true}});
+  }} catch (e) {{ console.error('gl plot:', e); showEmpty(id); }}
 }})();
 
 // === 한국 외국인 보유금액 + 비중 (월별, 이중축) ===
@@ -1970,7 +2114,7 @@ def main():
         print(f"[error] update_data fatal: {e}")
         import traceback; traceback.print_exc()
         df = load_history()
-        extras = {"us_margin_debt": {}, "m7_basket": {}, "kr_foreign_holding": {}}
+        extras = {"us_margin_debt": {}, "m7_basket": {}, "kr_foreign_holding": {}, "global_liquidity": pd.Series(dtype=float), "usdjpy": pd.Series(dtype=float)}
 
     signals = compute_signals(df, extras)
     regime_kr = compute_regime(df["kospi"]) if not df.empty else {}
