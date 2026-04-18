@@ -77,28 +77,58 @@ def fetch_cor1m():
     CBOE 1-Month Implied Correlation Index (^COR1M).
     S&P 500 구성종목 간 내재상관 — '모두 같이 움직일 확률'을 옵션으로 측정.
     높음(60+) = 시스템 공포, 낮음(<20) = 쏠림 극한 (역설적 위험).
-    Yahoo Finance 차트 API로 직접 조회 (FDR에서 제공 여부 불확실).
     """
     import urllib.parse
+
+    # 1) FDR로 Yahoo ^COR1M 시도
+    try:
+        df = fdr.DataReader("^COR1M")
+        if df is not None and not df.empty:
+            s = df["Close"] if "Close" in df.columns else df.iloc[:, 0]
+            s = s.dropna()
+            if not s.empty:
+                s.index = pd.to_datetime(s.index).date
+                cutoff = TODAY - dt.timedelta(days=LOOKBACK_DAYS)
+                s = s[s.index >= cutoff]
+                last = float(s.iloc[-1]) if not s.empty else None
+                if last and 1 < last < 100:
+                    print(f"  cor1m via fdr: {len(s)} rows, latest {last:.2f}")
+                    return s.rename("cor1m")
+    except Exception as e:
+        print(f"  [info] fdr cor1m failed: {e}")
+
+    # 2) Yahoo chart API 직접 호출 (강화된 헤더)
     end_ts = int(dt.datetime.now(KST).timestamp())
     start_ts = end_ts - LOOKBACK_DAYS * 86400
     symbol = urllib.parse.quote("^COR1M")
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?period1={start_ts}&period2={end_ts}&interval=1d"
-    headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"}
-    r = requests.get(url, headers=headers, timeout=20)
-    r.raise_for_status()
-    data = r.json()
+    url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+           f"?period1={start_ts}&period2={end_ts}&interval=1d")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://finance.yahoo.com/quote/%5ECOR1M/",
+        "Origin": "https://finance.yahoo.com",
+    }
     try:
+        r = requests.get(url, headers=headers, timeout=20)
+        r.raise_for_status()
+        data = r.json()
         result = data["chart"]["result"][0]
         timestamps = result["timestamp"]
         closes = result["indicators"]["quote"][0]["close"]
-    except (KeyError, IndexError, TypeError) as e:
-        print(f"  [warn] cor1m parse: {e}")
-        return pd.Series(dtype=float, name="cor1m")
-    dates = [dt.datetime.fromtimestamp(t, tz=dt.timezone.utc).date() for t in timestamps]
-    s = pd.Series(closes, index=dates, name="cor1m")
-    s = s.dropna()
-    return s
+        dates = [dt.datetime.fromtimestamp(t, tz=dt.timezone.utc).date() for t in timestamps]
+        s = pd.Series(closes, index=dates, name="cor1m").dropna()
+        if not s.empty:
+            last = float(s.iloc[-1])
+            print(f"  cor1m via yahoo: {len(s)} rows, latest {last:.2f}")
+            return s
+    except Exception as e:
+        print(f"  [warn] yahoo cor1m: {e}")
+
+    print(f"  [warn] cor1m: all sources failed")
+    return pd.Series(dtype=float, name="cor1m")
 
 
 def fetch_naver_deposit():
@@ -223,25 +253,71 @@ def fetch_krx_vkospi(days=LOOKBACK_DAYS):
 
 def fetch_fdr_vkospi():
     """
-    FinanceDataReader로 VKOSPI 지수 조회 시도.
-    실패 시 빈 Series. 성공 시 (index: date, value: float) Series.
+    VKOSPI 지수 조회. 여러 소스 순차 시도 + 값 검증.
+    VKOSPI 정상 범위는 5~100 (실제로는 보통 10~60). 이 범위 밖이면 잘못된 데이터로 판단.
     """
-    try:
-        df = fdr.DataReader("VKOSPI")
-        if df is None or df.empty:
-            return pd.Series(dtype=float, name="vkospi")
-        if "Close" in df.columns:
-            s = df["Close"]
-        else:
-            s = df.iloc[:, 0]
-        s.index = pd.to_datetime(s.index).date
-        # 최근 LOOKBACK 범위만
-        cutoff = TODAY - dt.timedelta(days=LOOKBACK_DAYS)
-        s = s[s.index >= cutoff]
-        return s.rename("vkospi").dropna()
-    except Exception as e:
-        print(f"  [warn] fdr vkospi: {e}")
-        return pd.Series(dtype=float, name="vkospi")
+    import urllib.parse
+
+    cutoff = TODAY - dt.timedelta(days=LOOKBACK_DAYS)
+    candidates = []
+
+    # 1) FDR 여러 심볼 시도
+    for symbol in ["KSVKOSPI", "^KSVKOSPI", "^VKOSPI"]:
+        try:
+            df = fdr.DataReader(symbol)
+            if df is None or df.empty:
+                continue
+            s = df["Close"] if "Close" in df.columns else df.iloc[:, 0]
+            s = s.dropna()
+            if s.empty:
+                continue
+            last = float(s.iloc[-1])
+            if not (5 <= last <= 100):
+                print(f"  [warn] fdr {symbol} out of range ({last:.2f}), skip")
+                continue
+            s.index = pd.to_datetime(s.index).date
+            s = s[s.index >= cutoff]
+            print(f"  vkospi via fdr ({symbol}): {len(s)} rows, latest {last:.2f}")
+            return s.rename("vkospi")
+        except Exception as e:
+            print(f"  [warn] fdr {symbol}: {e}")
+
+    # 2) Yahoo Finance chart API 직접 호출
+    end_ts = int(dt.datetime.now(KST).timestamp())
+    start_ts = end_ts - LOOKBACK_DAYS * 86400
+    for symbol in ["^KSVKOSPI", "^VKOSPI"]:
+        try:
+            url = (f"https://query1.finance.yahoo.com/v8/finance/chart/"
+                   f"{urllib.parse.quote(symbol)}"
+                   f"?period1={start_ts}&period2={end_ts}&interval=1d")
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                              "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://finance.yahoo.com/",
+            }
+            r = requests.get(url, headers=headers, timeout=20)
+            r.raise_for_status()
+            data = r.json()
+            result = data["chart"]["result"][0]
+            timestamps = result["timestamp"]
+            closes = result["indicators"]["quote"][0]["close"]
+            dates = [dt.datetime.fromtimestamp(t, tz=dt.timezone.utc).date() for t in timestamps]
+            s = pd.Series(closes, index=dates, name="vkospi").dropna()
+            if s.empty:
+                continue
+            last = float(s.iloc[-1])
+            if 5 <= last <= 100:
+                print(f"  vkospi via yahoo ({symbol}): {len(s)} rows, latest {last:.2f}")
+                return s
+            else:
+                print(f"  [warn] yahoo {symbol} out of range ({last:.2f})")
+        except Exception as e:
+            print(f"  [warn] yahoo vkospi {symbol}: {e}")
+
+    print(f"  [warn] vkospi: all sources failed")
+    return pd.Series(dtype=float, name="vkospi")
 
 
 # ================================================================
@@ -404,15 +480,24 @@ def fetch_vkospi_naver():
 
 
 def fetch_sector_basket(tickers):
+    """섹터 종목 바스켓을 Base 100 누적 추세로 반환."""
     closes = []
     for t in tickers:
-        s = safe(f"ticker_{t}", lambda tt=t: fetch_fdr(tt, name=tt, days=60), default=pd.Series(dtype=float))
+        s = safe(f"ticker_{t}", lambda tt=t: fetch_fdr(tt, name=tt, days=LOOKBACK_DAYS),
+                 default=pd.Series(dtype=float))
         if not s.empty:
             closes.append(s)
     if not closes:
         return pd.Series(dtype=float)
-    df = pd.concat(closes, axis=1).ffill()
-    return (df.pct_change() * 100).mean(axis=1)
+    df = pd.concat(closes, axis=1).ffill().bfill()
+    # 각 종목을 첫 유효값 기준 Base 100으로 정규화 후 평균
+    first = df.iloc[0]
+    # 0 또는 NaN이 있는 컬럼 제외
+    valid_cols = first[(first > 0) & first.notna()].index
+    if len(valid_cols) == 0:
+        return pd.Series(dtype=float)
+    normalized = df[valid_cols].div(first[valid_cols]) * 100
+    return normalized.mean(axis=1)
 
 
 MAIN_COLS = [
@@ -916,32 +1001,80 @@ def render_dashboard(df, signals, regime_kr, regime_us):
             return []
         return pd.to_numeric(df_plot[c], errors="coerce").fillna(0).round(2).tolist()
 
+    def col_nullable(c):
+        """NaN을 None으로 보내서 Plotly가 해당 구간을 비워둠."""
+        if df_plot.empty or c not in df_plot.columns:
+            return []
+        s = pd.to_numeric(df_plot[c], errors="coerce")
+        return [None if pd.isna(v) else round(float(v), 2) for v in s]
+
     dates = [d.strftime("%Y-%m-%d") for d in df_plot["date"]] if not df_plot.empty else []
 
     def ma_series(c, window=200):
+        """MA 시리즈. 계산 불가 구간(window 전)은 None으로 반환."""
         if df.empty or c not in df.columns:
             return []
         full = pd.to_numeric(df[c], errors="coerce")
-        ma_full = full.rolling(window).mean()
-        return ma_full.tail(120).fillna(0).round(2).tolist()
+        ma_full = full.rolling(window).mean().tail(120)
+        return [None if pd.isna(v) else round(float(v), 2) for v in ma_full]
+
+    def cum_base100(c):
+        """컬럼을 Base 100 누적 추세로 변환 (120일 플롯 구간 내 첫 유효값 기준)."""
+        if df_plot.empty or c not in df_plot.columns:
+            return []
+        s = pd.to_numeric(df_plot[c], errors="coerce").ffill()
+        valid = s.dropna()
+        if valid.empty:
+            return []
+        base = valid.iloc[0]
+        if base == 0 or pd.isna(base):
+            return []
+        result = (s / base) * 100
+        return [None if pd.isna(v) else round(float(v), 2) for v in result]
+
+    def y_range(values_list, pad=0.04):
+        """여러 series를 합쳐서 min/max로 y-range 제안. 값 없으면 None."""
+        all_vals = []
+        for vs in values_list:
+            all_vals.extend([v for v in vs if v is not None and v > 0])
+        if not all_vals:
+            return None
+        lo, hi = min(all_vals), max(all_vals)
+        span = hi - lo
+        return [lo - span * pad, hi + span * pad]
+
+    # 차트별 Y축 range 미리 계산
+    sp500_vals = col_nullable("sp500")
+    nasdaq_vals = col_nullable("nasdaq")
+    sp500_ma = ma_series("sp500", 200)
+    nasdaq_ma = ma_series("nasdaq", 200)
 
     js_data = {
         "dates": dates,
-        "kospi": col("kospi"), "kospi_ma200": ma_series("kospi", 200),
-        "kosdaq": col("kosdaq"),
+        "kospi": col_nullable("kospi"), "kospi_ma200": ma_series("kospi", 200),
+        "kosdaq": col_nullable("kosdaq"),
+        # 반도체 양대장 — 누적 수익률 (Base 100)
+        "kospi_base100": cum_base100("kospi"),
+        "samsung_base100": cum_base100("samsung"),
+        "hynix_base100": cum_base100("hynix"),
         "samsung_ret": col_raw("samsung_ret_pct"), "hynix_ret": col_raw("hynix_ret_pct"),
-        "vkospi": col_raw("vkospi"),
-        "credit": col("credit_balance_eok"), "forced": col_raw("forced_sale_eok"),
+        "vkospi": col_nullable("vkospi"),
+        "credit": col_nullable("credit_balance_eok"),
+        "forced": col_raw("forced_sale_eok"),
         "foreign": col_raw("foreign_net_eok"),
-        "sp500": col("sp500"), "sp500_ma200": ma_series("sp500", 200),
-        "nasdaq": col("nasdaq"), "nasdaq_ma200": ma_series("nasdaq", 200),
-        "vix": col("vix"), "nvda": col("nvda"), "ust10y": col("ust10y"),
-        "cor1m": col("cor1m"),
-        "sec_반도체": col_raw("sec_반도체"),
-        "sec_방산조선": col_raw("sec_방산조선"),
-        "sec_바이오": col_raw("sec_바이오"),
-        "sec_2차전지": col_raw("sec_2차전지"),
-        "sec_금융": col_raw("sec_금융"),
+        "sp500": sp500_vals, "sp500_ma200": sp500_ma,
+        "nasdaq": nasdaq_vals, "nasdaq_ma200": nasdaq_ma,
+        "vix": col_nullable("vix"), "nvda": col_nullable("nvda"),
+        "ust10y": col_nullable("ust10y"),
+        "cor1m": col_nullable("cor1m"),
+        "sec_반도체": col_nullable("sec_반도체"),
+        "sec_방산조선": col_nullable("sec_방산조선"),
+        "sec_바이오": col_nullable("sec_바이오"),
+        "sec_2차전지": col_nullable("sec_2차전지"),
+        "sec_금융": col_nullable("sec_금융"),
+        # Y축 range 힌트
+        "sp500_range": y_range([sp500_vals, sp500_ma]),
+        "nasdaq_range": y_range([nasdaq_vals, nasdaq_ma]),
     }
 
     last_date = df_plot["date"].iloc[-1].strftime("%Y년 %m월 %d일") if not df_plot.empty else "대기"
@@ -1126,12 +1259,10 @@ plot('c_kr_foreign', [{{
 }}], '외국인 일별 순매수/매도 (코스피+코스닥)');
 
 plot('c_kr_semi', [
-  {{x: D.dates, y: D.samsung_ret, type: 'bar', name: '삼성전자 %', marker: {{color: '#185FA5'}}}},
-  {{x: D.dates, y: D.hynix_ret, type: 'bar', name: 'SK하이닉스 %', marker: {{color: '#534AB7'}}}}
-], '반도체 양대장 일간 변동률', {{
-  barmode: 'group',
-  shapes: [{{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: -3, y1: -3, line: {{color: '#A32D2D', width: 1, dash: 'dot'}}}}]
-}});
+  {{x: D.dates, y: D.kospi_base100, type: 'scatter', mode: 'lines', name: '코스피', line: {{color: '#888', width: 1, dash: 'dot'}}}},
+  {{x: D.dates, y: D.samsung_base100, type: 'scatter', mode: 'lines', name: '삼성전자', line: {{color: '#185FA5', width: 2}}}},
+  {{x: D.dates, y: D.hynix_base100, type: 'scatter', mode: 'lines', name: 'SK하이닉스', line: {{color: '#534AB7', width: 2}}}}
+], '반도체 누적 추세 (Base 100)');
 
 plot('c_kr_sector', [
   {{x: D.dates, y: D.sec_반도체, type: 'scatter', mode: 'lines', name: '반도체', line: {{color: '#185FA5'}}}},
@@ -1139,17 +1270,17 @@ plot('c_kr_sector', [
   {{x: D.dates, y: D.sec_바이오, type: 'scatter', mode: 'lines', name: '바이오', line: {{color: '#1D9E75'}}}},
   {{x: D.dates, y: D.sec_2차전지, type: 'scatter', mode: 'lines', name: '2차전지', line: {{color: '#BA7517'}}}},
   {{x: D.dates, y: D.sec_금융, type: 'scatter', mode: 'lines', name: '금융', line: {{color: '#888'}}}}
-], '업종 바구니 일간 수익률');
+], '업종 바구니 누적 추세 (Base 100)');
 
 plot('c_us_sp', [
   {{x: D.dates, y: D.sp500, type: 'scatter', mode: 'lines', name: 'S&P 500', line: {{color: '#185FA5', width: 2}}}},
   {{x: D.dates, y: D.sp500_ma200, type: 'scatter', mode: 'lines', name: '200일선', line: {{color: '#A32D2D', width: 1.5, dash: 'dash'}}}}
-], 'S&P 500 + 200일선');
+], 'S&P 500 + 200일선', D.sp500_range ? {{yaxis: {{range: D.sp500_range}}}} : undefined);
 
 plot('c_us_nasdaq', [
   {{x: D.dates, y: D.nasdaq, type: 'scatter', mode: 'lines', name: '나스닥', line: {{color: '#534AB7', width: 2}}}},
   {{x: D.dates, y: D.nasdaq_ma200, type: 'scatter', mode: 'lines', name: '200일선', line: {{color: '#A32D2D', width: 1.5, dash: 'dash'}}}}
-], '나스닥 + 200일선');
+], '나스닥 + 200일선', D.nasdaq_range ? {{yaxis: {{range: D.nasdaq_range}}}} : undefined);
 
 plot('c_us_vix', [
   {{x: D.dates, y: D.vix, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VIX',
