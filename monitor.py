@@ -40,9 +40,16 @@ GLOBAL_LIQUIDITY_SERIES = {
     "JPNASSETS": "boj_assets",
 }
 
-INDEX_GO_KR_FOREIGN_HOLDING_TABLE_URL = (
-    "https://www.index.go.kr/unity/potal/eNara/sub/showStblGams3.do"
-    "?freq=Y&idx_cd=1086&period=N&stts_cd=108601"
+# index.go.kr는 GitHub Actions IP를 차단함 → KRX + ECOS로 대체
+# KRX 통계포털 외국인 보유현황 API (JSON, 인증불필요)
+KRX_FOREIGN_HOLDING_URL = (
+    "http://data.krx.co.kr/comm/bfebas/PBMABAS002/retrieveStock.cmd"
+)
+# 한국은행 ECOS 오픈 API (무인증 샘플키 사용, 하루 1000건 제한)
+ECOS_API_KEY = "sample"  # 실제 키 발급: ecos.bok.or.kr → 내 서비스 관리
+ECOS_FOREIGN_HOLDING_URL = (
+    "https://ecos.bok.or.kr/api/StatisticSearch/{key}/json/kr/1/100"
+    "/064Y001/MM/{start}/{end}/0001000"
 )
 
 def fetch_fred_series(series_id, name=None, days=LOOKBACK_DAYS * 3):
@@ -67,15 +74,6 @@ def fetch_usdjpy_series(days=LOOKBACK_DAYS * 3):
     if not usdjpy.empty:
         return usdjpy
     return pd.Series(dtype=float, name="usdjpy")
-
-
-def fetch_usdkrw_series(days=LOOKBACK_DAYS):
-    """원달러 환율 - FRED DEXKOUS (KRW per USD, 일별)."""
-    s = fetch_fred_series("DEXKOUS", "usdkrw", days=days * 2)
-    if not s.empty:
-        latest = float(s.iloc[-1])
-        print(f"  usdkrw (fred): {len(s)} rows, latest {latest:.1f}")
-    return s
 
 
 def fetch_global_liquidity_proxy():
@@ -533,11 +531,143 @@ def fetch_m7_plus_basket():
 # 한국 외국인 주식 보유금액 & 비중 - index.go.kr (월별)
 # ================================================================
 def fetch_foreign_holding_kr():
+    """
+    외국인 주식 보유금액 & 비중 (월별).
+    소스 우선순위:
+      1) 한국은행 ECOS API (GitHub IP 안 막음, 무인증 sample 키 하루 1000건)
+      2) KRX 통계포털 (POST JSON)
+      3) index.go.kr (GitHub에서 자주 차단 → 마지막 폴백)
+    Returns: {date: {"amount_trillion": float|None, "pct": float|None}}
+    """
+    cutoff = TODAY - dt.timedelta(days=36 * 31)
+    result = {}
+
+    # ── 1) 한국은행 ECOS API ──────────────────────────────────────────────────
+    # 통계코드 064Y001 / 항목코드 0001000 = 외국인 보유 시가총액
+    # 단위: 억원 → 조원 변환
+    try:
+        start_ym = (TODAY - dt.timedelta(days=36 * 31)).strftime("%Y%m")
+        end_ym   = TODAY.strftime("%Y%m")
+        url = (
+            f"https://ecos.bok.or.kr/api/StatisticSearch/{ECOS_API_KEY}/json/kr"
+            f"/1/200/064Y001/MM/{start_ym}/{end_ym}/0001000"
+        )
+        r = requests.get(url, timeout=20)
+        if r.status_code == 200:
+            j = r.json()
+            rows = j.get("StatisticSearch", {}).get("row", [])
+            if rows:
+                for row in rows:
+                    ym = str(row.get("TIME", ""))          # e.g. "202312"
+                    val_str = str(row.get("DATA_VALUE", "")).replace(",", "").strip()
+                    if len(ym) == 6 and val_str not in ("", "nan", "-"):
+                        try:
+                            y, m = int(ym[:4]), int(ym[4:])
+                            d = dt.date(y, m, 1)
+                            if d >= cutoff:
+                                amount_trillion = round(float(val_str) / 10000, 1)  # 억원 → 조원
+                                result[d] = {"amount_trillion": amount_trillion, "pct": None}
+                        except Exception:
+                            continue
+                # 비중 (%) - 통계코드 064Y001 / 항목코드 0001100
+                url2 = (
+                    f"https://ecos.bok.or.kr/api/StatisticSearch/{ECOS_API_KEY}/json/kr"
+                    f"/1/200/064Y001/MM/{start_ym}/{end_ym}/0001100"
+                )
+                r2 = requests.get(url2, timeout=20)
+                if r2.status_code == 200:
+                    rows2 = r2.json().get("StatisticSearch", {}).get("row", [])
+                    for row in rows2:
+                        ym = str(row.get("TIME", ""))
+                        val_str = str(row.get("DATA_VALUE", "")).replace(",", "").strip()
+                        if len(ym) == 6 and val_str not in ("", "nan", "-"):
+                            try:
+                                y, m = int(ym[:4]), int(ym[4:])
+                                d = dt.date(y, m, 1)
+                                if d in result:
+                                    result[d]["pct"] = round(float(val_str), 2)
+                            except Exception:
+                                continue
+            if result:
+                latest = max(result.keys())
+                amt = result[latest].get("amount_trillion")
+                pct = result[latest].get("pct")
+                amt_s = f"{amt:.1f}조원" if amt is not None else "-"
+                pct_s = f"{pct:.1f}%" if pct is not None else "-"
+                print(f"  foreign holding kr (ECOS): {len(result)} months, latest {latest}: {amt_s} / {pct_s}")
+                return dict(sorted(result.items()))
+            else:
+                print("  [info] ECOS foreign holding: 0 rows (sample key 한도 초과 or 코드 불일치)")
+    except Exception as e:
+        print(f"  [info] ECOS foreign holding: {e}")
+
+    # ── 2) KRX 통계포털 ──────────────────────────────────────────────────────
+    # data.krx.co.kr → 외국인 보유현황 (주식 전체) - POST 방식 JSON
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Referer": "http://data.krx.co.kr/",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        # 최근 36개월치 요청
+        months_needed = []
+        d_iter = TODAY.replace(day=1)
+        for _ in range(36):
+            months_needed.append(d_iter)
+            m = d_iter.month - 1 or 12
+            y = d_iter.year - (1 if d_iter.month == 1 else 0)
+            d_iter = dt.date(y, m, 1)
+
+        tmp = {}
+        for mdate in months_needed[:6]:   # KRX는 월별 단건 조회 → 최근 6개월만
+            ym_str = mdate.strftime("%Y%m")
+            payload = {
+                "bld": "dbms/MDC/STAT/standard/MDCSTAT03901",
+                "locale": "ko_KR",
+                "searchType": "1",
+                "mktId": "ALL",
+                "trdDd": mdate.strftime("%Y%m%d"),
+                "share": "1",
+                "money": "1",
+                "csvxls_isNo": "false",
+            }
+            try:
+                rk = requests.post(
+                    "http://data.krx.co.kr/comm/bfebas/PBMABAS002/retrieveData.cmd",
+                    data=payload, headers=headers, timeout=15
+                )
+                if rk.status_code != 200:
+                    continue
+                jk = rk.json()
+                # 전체 합계 행 찾기
+                for row in jk.get("output", []):
+                    if row.get("ISU_NM", "") in ("합계", "전체", "TOTAL", ""):
+                        amt_raw = str(row.get("FORN_HLD_QTY", "0")).replace(",", "")
+                        try:
+                            tmp[mdate] = {"amount_trillion": round(float(amt_raw) / 1e8, 1), "pct": None}
+                        except Exception:
+                            pass
+                        break
+            except Exception:
+                continue
+
+        if tmp:
+            result.update(tmp)
+            result = {d: v for d, v in result.items() if d >= cutoff}
+            if result:
+                latest = max(result.keys())
+                amt = result[latest].get("amount_trillion")
+                print(f"  foreign holding kr (KRX): {len(result)} months, latest {latest}: {amt:.1f}조원 (비중 미포함)")
+                return dict(sorted(result.items()))
+    except Exception as e:
+        print(f"  [info] KRX foreign holding: {e}")
+
+    # ── 3) index.go.kr 폴백 (GitHub에서 ConnectionReset 빈번) ────────────────
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
         "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
     }
-    result = {}
 
     def _parse_periods(header_text):
         periods = []
@@ -560,9 +690,21 @@ def fetch_foreign_holding_kr():
         return values
 
     try:
-        r = requests.get(INDEX_GO_KR_FOREIGN_HOLDING_TABLE_URL, headers=headers, timeout=20)
+        session = requests.Session()
+        session.headers.update(headers)
+        # 쿠키 먼저 받기 (봇 차단 우회)
+        try:
+            session.get("https://www.index.go.kr/", timeout=10)
+            time.sleep(1)
+        except Exception:
+            pass
+        url = (
+            "https://www.index.go.kr/unity/potal/eNara/sub/showStblGams3.do"
+            "?freq=Y&idx_cd=1086&period=N&stts_cd=108601"
+        )
+        r = session.get(url, timeout=20)
         if r.status_code != 200:
-            print(f"  [info] foreign holding kr: status {r.status_code}")
+            print(f"  [info] foreign holding kr (index.go.kr): status {r.status_code}")
             return result
 
         text = BeautifulSoup(r.text, "html.parser").get_text("\n", strip=True)
@@ -574,36 +716,31 @@ def fetch_foreign_holding_kr():
         amounts = _parse_values(amount_line)
         pcts = _parse_values(pct_line)
 
-        if not periods or not amounts:
-            print(f"  [info] foreign holding kr: table parse empty (periods={len(periods)}, amounts={len(amounts)})")
-            return result
-
-        for d, amount in zip(periods, amounts):
-            result[d] = {"amount_trillion": amount, "pct": None}
-        for d, pct in zip(periods, pcts):
-            result.setdefault(d, {"amount_trillion": None, "pct": None})
-            result[d]["pct"] = pct
-
-        cutoff = TODAY - dt.timedelta(days=36 * 31)
-        result = {d: v for d, v in result.items() if d >= cutoff}
-        if result:
-            latest = max(result.keys())
-            latest_amount = result[latest].get("amount_trillion")
-            latest_pct = result[latest].get("pct")
-            amt_str = f"{latest_amount:.1f}조원" if latest_amount is not None else "-"
-            pct_str = f"{latest_pct:.1f}%" if latest_pct is not None else "-"
-            print(f"  foreign holding kr (index.go.kr): {len(result)} months, latest {latest}: {amt_str} / {pct_str}")
-        else:
-            print("  [info] foreign holding kr: no recent rows")
+        if periods and amounts:
+            for d, amount in zip(periods, amounts):
+                result[d] = {"amount_trillion": amount, "pct": None}
+            for d, pct in zip(periods, pcts):
+                result.setdefault(d, {"amount_trillion": None, "pct": None})
+                result[d]["pct"] = pct
+            result = {d: v for d, v in result.items() if d >= cutoff}
+            if result:
+                latest = max(result.keys())
+                amt = result[latest].get("amount_trillion")
+                pct = result[latest].get("pct")
+                amt_s = f"{amt:.1f}조원" if amt is not None else "-"
+                pct_s = f"{pct:.1f}%" if pct is not None else "-"
+                print(f"  foreign holding kr (index.go.kr): {len(result)} months, latest {latest}: {amt_s} / {pct_s}")
+                return dict(sorted(result.items()))
+        print(f"  [info] foreign holding kr: all sources failed")
     except Exception as e:
-        print(f"  [info] foreign holding kr: {e}")
+        print(f"  [info] foreign holding kr (index.go.kr): {e}")
     return result
 
 
 MAIN_COLS = [
     "date",
-    "kospi", "kosdaq", "samsung", "hynix",
-    "credit_balance_eok", "forced_sale_eok",
+    "kospi", "kosdaq", "samsung", "hynix", "vkospi",
+    "credit_balance_eok", "forced_sale_eok", "foreign_net_eok",
     "samsung_ret_pct", "hynix_ret_pct",
     "sp500", "nasdaq", "vix", "nvda", "ust10y", "cor1m",
     "sec_반도체", "sec_방산조선", "sec_바이오", "sec_2차전지", "sec_금융",
@@ -677,8 +814,14 @@ def update_data():
         except Exception as e:
             return {}
 
+    # 4. VKOSPI — 모든 소스 차단, 제거됨
+    def _vkospi_with_fallback():
+        return {"type": "none", "data": None}
+
     credit_map = safe("credit", _credit_balance_with_fallback, default={})
     market_cap = safe("market_cap", _market_capital_with_fallback, default={"forced_sale": {}, "investor_deposit": {}})
+    foreign_flow = safe("foreign", _foreign_flow, default={})
+    vkospi_result = safe("vkospi", _vkospi_with_fallback, default={"type": "none", "data": None})
 
     series_dict = {
         "kospi": kospi, "kosdaq": kosdaq, "samsung": samsung, "hynix": hynix,
@@ -688,20 +831,37 @@ def update_data():
     }
     df = pd.DataFrame(series_dict)
     df = df.reset_index().rename(columns={"index": "date"})
-    df["samsung_ret_pct"] = df["samsung"].pct_change(fill_method=None) * 100
-    df["hynix_ret_pct"] = df["hynix"].pct_change(fill_method=None) * 100
+    df["samsung_ret_pct"] = df["samsung"].pct_change() * 100
+    df["hynix_ret_pct"] = df["hynix"].pct_change() * 100
     df["credit_balance_eok"] = None
     df["forced_sale_eok"] = None
+    df["foreign_net_eok"] = None
+    df["vkospi"] = None
 
-    # 신용공여잔고 채우기
+    # 신용공여잔고 채우기 (전체 시계열)
     for cdate, cval in credit_map.items():
         if cdate in df["date"].values:
             df.loc[df["date"] == cdate, "credit_balance_eok"] = cval
 
-    # 반대매매 채우기
+    # 반대매매 채우기 (전체 시계열)
     for fdate, fval in market_cap.get("forced_sale", {}).items():
         if fdate in df["date"].values:
             df.loc[df["date"] == fdate, "forced_sale_eok"] = fval
+
+    # VKOSPI 채우기
+    if vkospi_result["type"] == "series":
+        vseries = vkospi_result["data"]
+        for vdate, vval in vseries.items():
+            if vdate in df["date"].values:
+                df.loc[df["date"] == vdate, "vkospi"] = float(vval)
+    elif vkospi_result["type"] == "spot" and not df.empty:
+        latest_date = df["date"].max()
+        df.loc[df["date"] == latest_date, "vkospi"] = float(vkospi_result["data"])
+
+    # 외국인 순매수 채우기
+    for date, val in foreign_flow.items():
+        if date in df["date"].values:
+            df.loc[df["date"] == date, "foreign_net_eok"] = val
 
     for c in MAIN_COLS:
         if c not in df.columns:
@@ -718,15 +878,13 @@ def update_data():
     m7_basket = safe("m7_plus", fetch_m7_plus_basket, default={})
     kr_foreign_holding = safe("foreign_holding_kr", fetch_foreign_holding_kr, default={})
     gl = safe("global_liquidity", fetch_global_liquidity_proxy, default={"global_liquidity": pd.Series(dtype=float), "usdjpy": pd.Series(dtype=float)})
-    usdkrw = safe("usdkrw", fetch_usdkrw_series, default=pd.Series(dtype=float, name="usdkrw"))
 
     extras = {
-        "us_margin_debt": us_margin_debt,
-        "m7_basket": m7_basket,
-        "kr_foreign_holding": kr_foreign_holding,
+        "us_margin_debt": us_margin_debt,         # {date: bil_usd}  월별
+        "m7_basket": m7_basket,                   # {ticker: Series}
+        "kr_foreign_holding": kr_foreign_holding, # {date: {amount_trillion, pct}}  월별
         "global_liquidity": gl.get("global_liquidity", pd.Series(dtype=float)),
         "usdjpy": gl.get("usdjpy", pd.Series(dtype=float)),
-        "usdkrw": usdkrw,
     }
     return combined, extras
 
@@ -742,9 +900,10 @@ def level_from_gap(v, thresholds):
 
 def pct_deviation_from_ma(series, window=200):
     s = pd.to_numeric(series, errors="coerce").dropna()
-    if len(s) < window:
+    effective_window = min(window, len(s))
+    if effective_window < 10:   # 10일 미만이면 의미없음
         return None
-    ma = s.rolling(window).mean().iloc[-1]
+    ma = s.rolling(effective_window).mean().iloc[-1]
     cur = s.iloc[-1]
     if ma == 0 or pd.isna(ma):
         return None
@@ -797,6 +956,17 @@ def compute_signals(df, extras=None):
         "description": f"최근 5일 동시 -3%: {both}회"
     }
 
+    foreign_ser = pd.to_numeric(df["foreign_net_eok"], errors="coerce").dropna()
+    kr["KR4"] = {"name": "외국인 7일 누적 순매도", "level": 0, "description": "데이터 부족"}
+    if len(foreign_ser) >= 7:
+        sum7 = float(foreign_ser.tail(7).sum())
+        outflow = -sum7 / 10000
+        kr["KR4"] = {
+            "name": "외국인 7일 누적 순매도",
+            "level": level_from_gap(outflow, [1.0, 3.0, 5.0]),
+            "description": f"최근 7영업일 합계 {sum7/10000:+.2f}조"
+        }
+
     dev_kospi = pct_deviation_from_ma(df["kospi"], 200)
     kr["KR5"] = {"name": "코스피-200일선 괴리", "level": 0, "description": "데이터 부족"}
     if dev_kospi is not None:
@@ -804,6 +974,16 @@ def compute_signals(df, extras=None):
             "name": "코스피-200일선 괴리율",
             "level": level_from_gap(abs(dev_kospi), [10, 20, 30]),
             "description": f"200일선 대비 {dev_kospi:+.1f}%"
+        }
+
+    vkospi_ser = pd.to_numeric(df["vkospi"], errors="coerce").dropna()
+    kr["KR6"] = {"name": "VKOSPI 공포지수", "level": 0, "description": "데이터 수집 중 (네이버)"}
+    if len(vkospi_ser):
+        v = float(vkospi_ser.iloc[-1])
+        kr["KR6"] = {
+            "name": "VKOSPI 공포지수",
+            "level": level_from_gap(v, [20, 30, 40]),
+            "description": f"현재 {v:.1f}"
         }
 
     sp500_ser = pd.to_numeric(df["sp500"], errors="coerce").dropna()
@@ -938,16 +1118,17 @@ def compute_regime(index_series):
         "mid":   {"label": "대기", "score": 0, "reasons": []},
         "long":  {"label": "대기", "score": 0, "reasons": []},
     }
-    if len(s) < 200:
+    if len(s) < 30:   # 30일 미만이면 데이터 부족으로 대기 (기존 200 → 30)
         return result
+    # 데이터가 충분하지 않은 지표는 개별 계산 시 건너뜀 (len 체크 유지)
 
     cur = s.iloc[-1]
-    ma50 = s.rolling(50).mean().iloc[-1]
-    ma200 = s.rolling(200).mean().iloc[-1]
-    ma50_20prev = s.rolling(50).mean().iloc[-21] if len(s) > 220 else ma50
-    ma200_30prev = s.rolling(200).mean().iloc[-31] if len(s) > 230 else ma200
+    ma50  = s.rolling(min(50,  len(s))).mean().iloc[-1]
+    ma200 = s.rolling(min(200, len(s))).mean().iloc[-1]
+    ma50_20prev  = s.rolling(min(50,  len(s))).mean().iloc[-21] if len(s) > 70  else ma50
+    ma200_30prev = s.rolling(min(200, len(s))).mean().iloc[-31] if len(s) > 230 else ma200
     high52w = s.tail(252).max() if len(s) >= 252 else s.max()
-    low52w = s.tail(252).min() if len(s) >= 252 else s.min()
+    low52w  = s.tail(252).min() if len(s) >= 252 else s.min()
 
     short_score = 0
     ret30d = (cur / s.iloc[-30] - 1) * 100 if len(s) >= 30 else 0
@@ -1098,7 +1279,8 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
         if df.empty or c not in df.columns or df_plot.empty:
             return []
         full = pd.to_numeric(df[c], errors="coerce")
-        ma_full = full.rolling(window).mean().tail(len(df_plot))
+        effective_window = min(window, max(1, len(full)))
+        ma_full = full.rolling(effective_window).mean().tail(len(df_plot))
         return [None if pd.isna(v) else round(float(v), 2) for v in ma_full]
 
     def base100(c, *, max_daily_jump_pct=25):
@@ -1132,6 +1314,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     kosdaq = series_connected("kosdaq", min_val=300, max_daily_jump_pct=20)
     sp500 = series_connected("sp500", min_val=1000, max_daily_jump_pct=20)
     nasdaq = series_connected("nasdaq", min_val=1000, max_daily_jump_pct=20)
+    vkospi = series_connected("vkospi", min_val=3, max_val=200, max_daily_jump_pct=80)
     cor1m = series_connected("cor1m", min_val=1, max_val=100, max_daily_jump_pct=60)
 
     js_data = {
@@ -1144,8 +1327,10 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
         "kosdaq_base100": base100("kosdaq"),
         "samsung_base100": base100("samsung"),
         "hynix_base100": base100("hynix"),
+        "vkospi": vkospi,
         "credit": series_connected("credit_balance_eok", min_val=100000, max_daily_jump_pct=15),
         "forced": series_nullable("forced_sale_eok"),
+        "foreign": series_nullable("foreign_net_eok"),
         "sp500": sp500,
         "sp500_ma200": ma_series("sp500", 200),
         "nasdaq": nasdaq,
@@ -1234,6 +1419,18 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     js_data["global_liquidity"] = gl_proxy_vals
     js_data["usdjpy"] = usdjpy_vals
 
+    # 3. 한국 외국인 보유금액 + 비중 (월별)
+    fhold = extras.get("kr_foreign_holding", {}) or {}
+    if fhold:
+        sorted_fh = sorted(fhold.items())
+        js_data["fh_dates"] = [d.strftime("%Y-%m") for d, _ in sorted_fh]
+        js_data["fh_amount"] = [v.get("amount_trillion") for _, v in sorted_fh]
+        js_data["fh_pct"] = [v.get("pct") for _, v in sorted_fh]
+    else:
+        js_data["fh_dates"] = []
+        js_data["fh_amount"] = []
+        js_data["fh_pct"] = []
+
     last_date = df_plot["date"].iloc[-1].strftime("%Y년 %m월 %d일") if not df_plot.empty else "대기"
     kr_color = COLOR.get(signals["label_kr"], "#888")
     us_color = COLOR.get(signals["label_us"], "#888")
@@ -1314,7 +1511,9 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
   </div>
   <div class="signal-grid">{kr_cards}</div>
   <div class="section-title">차트</div>
-  <div class="chart"><div id="c_kr_rel" style="height:320px;"></div></div>
+  <div class="chart-grid">
+    <div class="chart"><div id="c_kr_rel" style="height:320px;"></div></div>
+    <div class="chart"><div id="c_kr_vkospi" style="height:320px;"></div></div>
   </div>
   <div class="chart-grid">
     <div class="chart"><div id="c_kr_kospi_abs" style="height:280px;"></div></div>
@@ -1322,8 +1521,8 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
   </div>
   <div class="chart"><div id="c_kr_credit" style="height:300px;"></div></div>
   <div class="chart"><div id="c_kr_forced" style="height:280px;"></div></div>
-  <div class="chart"><div id="c_kr_usdkrw" style="height:280px;"></div></div>
-  <div class="chart"><div id="c_kr_credit_vs_krw" style="height:300px;"></div></div>
+  <div class="chart"><div id="c_kr_foreign" style="height:300px;"></div></div>
+  <div class="chart"><div id="c_kr_foreign_hold" style="height:320px;"></div></div>
   <div class="chart"><div id="c_kr_semi" style="height:280px;"></div></div>
   <div class="chart"><div id="c_kr_sector" style="height:320px;"></div></div>
 </div>
@@ -1397,6 +1596,13 @@ safePlot('c_kr_rel', [
   {{x: D.dates, y: D.kosdaq_base100, type: 'scatter', mode: 'lines', name: '코스닥', connectgaps: true, line: {{color: '#534AB7', width: 2.5}}}}
 ], '코스피 vs 코스닥 상대 추세 (Base 100)', {{yaxis: {{title: 'Base 100'}}}});
 
+safePlot('c_kr_vkospi', [
+  {{x: D.dates, y: D.vkospi, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VKOSPI', connectgaps: true, line: {{color: '#A32D2D', width: 2.2}}, fillcolor: 'rgba(163,45,45,0.10)'}}
+], 'VKOSPI 공포지수', {{yaxis: {{title: 'VKOSPI', range: [0, 80]}}, shapes: [
+  {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 20, y1: 20, line: {{color: '#BA7517', width: 1, dash: 'dot'}}}},
+  {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 30, y1: 30, line: {{color: '#A32D2D', width: 1, dash: 'dot'}}}},
+  {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 40, y1: 40, line: {{color: '#A32D2D', width: 1.5, dash: 'dash'}}}}
+]}});
 
 safePlot('c_kr_kospi_abs', [
   {{x: D.dates, y: D.kospi, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#185FA5', width: 2.3}}}},
@@ -1415,16 +1621,7 @@ safePlot('c_kr_credit', [
 
 safePlot('c_kr_forced', [{{x: D.dates, y: D.forced, type: 'bar', name: '반대매매(억)', marker: {{color: (D.forced || []).map(v => v >= 600 ? '#A32D2D' : v >= 400 ? '#D85A30' : v >= 200 ? '#BA7517' : '#888')}}}}], '일일 반대매매');
 
-safePlot('c_kr_usdkrw', [
-  {{x: D.dates, y: D.usdkrw, type: 'scatter', mode: 'lines', name: '원/달러', connectgaps: true,
-    line: {{color: '#C0392B', width: 2}}}}
-], '원달러 환율 (KRW/USD)', {{
-  yaxis: {{title: '원/달러', tickformat: ',.0f'}},
-  shapes: [
-    {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 1300, y1: 1300, line: {{color: '#BA7517', width: 1, dash: 'dot'}}}},
-    {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 1400, y1: 1400, line: {{color: '#A32D2D', width: 1, dash: 'dash'}}}}
-  ]
-}});
+safePlot('c_kr_foreign', [{{x: D.dates, y: D.foreign, type: 'bar', name: '외국인(억)', marker: {{color: (D.foreign || []).map(v => (v ?? 0) < 0 ? '#A32D2D' : '#1D9E75')}}}}], '외국인 일별 순매수/매도 (코스피+코스닥)');
 
 safePlot('c_kr_semi', [
   {{x: D.dates, y: D.kospi_base100, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#888', width: 1.2, dash: 'dot'}}}},
@@ -1609,38 +1806,40 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
   }} catch (e) {{ console.error('gl plot:', e); showEmpty(id); }}
 }})();
 
-// === 신용잔고 vs 원달러 환율 (이중축) ===
+// === 한국 외국인 보유금액 + 비중 (월별, 이중축) ===
 (function() {{
-  const id = 'c_kr_credit_vs_krw';
+  const id = 'c_kr_foreign_hold';
   const el = document.getElementById(id);
   if (!el) return;
-  const hasCredit = hasValues(D.credit);
-  const hasKrw = hasValues(D.usdkrw);
-  if (!hasCredit && !hasKrw) {{ showEmpty(id); return; }}
+  if (!D.fh_dates || D.fh_dates.length === 0) {{
+    showEmpty(id);
+    return;
+  }}
+  const hasAmount = hasValues(D.fh_amount);
+  const hasPct = hasValues(D.fh_pct);
+  if (!hasAmount && !hasPct) {{ showEmpty(id); return; }}
   try {{
     const traces = [];
-    if (hasCredit) {{
+    if (hasAmount) {{
       traces.push({{
-        x: D.dates, y: D.credit, type: 'scatter', mode: 'lines',
-        name: '신용잔고(억)', connectgaps: true,
-        line: {{color: '#185FA5', width: 2}}, fill: 'tozeroy',
-        fillcolor: 'rgba(24,95,165,0.10)'
+        x: D.fh_dates, y: D.fh_amount, type: 'bar', name: '보유금액(조원)',
+        marker: {{color: '#185FA5', opacity: 0.75}}
       }});
     }}
-    if (hasKrw) {{
+    if (hasPct) {{
       traces.push({{
-        x: D.dates, y: D.usdkrw, type: 'scatter', mode: 'lines',
-        name: '원/달러', yaxis: 'y2', connectgaps: true,
-        line: {{color: '#C0392B', width: 1.8, dash: 'dot'}}
+        x: D.fh_dates, y: D.fh_pct, type: 'scatter', mode: 'lines+markers',
+        name: '보유비중(%)', yaxis: 'y2',
+        line: {{color: '#BA7517', width: 2}}, marker: {{size: 5}}
       }});
     }}
     Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
-      title: {{text: '신용잔고 vs 원달러 (이중축)', font: {{size: 14}}}},
-      yaxis: {{title: '신용잔고(억)', tickformat: ',.0f'}},
-      yaxis2: {{title: '원/달러', overlaying: 'y', side: 'right', tickformat: ',.0f'}},
+      title: {{text: '외국인 주식 보유금액 + 비중 (월별)', font: {{size: 14}}}},
+      yaxis: {{title: '조원'}},
+      yaxis2: {{title: '비중(%)', overlaying: 'y', side: 'right'}},
       legend: {{orientation: 'h', y: -0.18}}
     }}), {{displayModeBar: false, responsive: true}});
-  }} catch (e) {{ console.error('credit_krw plot:', e); showEmpty(id); }}
+  }} catch (e) {{ console.error('fhold plot:', e); showEmpty(id); }}
 }})();
 </script>
 </body>
