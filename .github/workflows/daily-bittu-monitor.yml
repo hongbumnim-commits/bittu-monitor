@@ -30,8 +30,7 @@ jobs:
 
       - name: Run monitor
         env:
-          KRX_ID: ${{ secrets.KRX_ID }}
-          KRX_PW: ${{ secrets.KRX_PW }}
+          DATA_GO_KR_API_KEY: ${{ secrets.DATA_GO_KR_API_KEY }}
         run: python monitor.py
 
       - name: Commit results
