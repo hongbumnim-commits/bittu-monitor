@@ -262,14 +262,12 @@ safePlot('c_kr_vkospi', [
 ]});
 
 safePlot('c_kr_kospi_abs', [
-  {x: D.dates, y: D.kospi, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {color: '#185FA5', width: 2.3}},
-  {x: D.dates, y: D.kospi_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {color: '#A32D2D', width: 1.4, dash: 'dash'}}
-], '코스피 절대 추세', D.kospi_range ? {yaxis: {range: D.kospi_range}} : undefined);
+  {x: D.dates, y: D.kospi, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {color: '#185FA5', width: 2.3}}
+], '코스피', D.kospi_range ? {yaxis: {range: D.kospi_range}} : undefined);
 
 safePlot('c_kr_kosdaq_abs', [
-  {x: D.dates, y: D.kosdaq, type: 'scatter', mode: 'lines', name: '코스닥', connectgaps: true, line: {color: '#534AB7', width: 2.3}},
-  {x: D.dates, y: D.kosdaq_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {color: '#A32D2D', width: 1.4, dash: 'dash'}}
-], '코스닥 절대 추세', D.kosdaq_range ? {yaxis: {range: D.kosdaq_range}} : undefined);
+  {x: D.dates, y: D.kosdaq, type: 'scatter', mode: 'lines', name: '코스닥', connectgaps: true, line: {color: '#534AB7', width: 2.3}}
+], '코스닥', D.kosdaq_range ? {yaxis: {range: D.kosdaq_range}} : undefined);
 
 safePlot('c_kr_credit', [
   {x: D.dates, y: D.kospi, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {color: '#185FA5', width: 2.2}},
@@ -297,14 +295,12 @@ safePlot('c_kr_sector', [
 ], '업종 바구니 누적 추세 (Base 100)', {yaxis: {title: 'Base 100'}});
 
 safePlot('c_us_sp', [
-  {x: D.dates, y: D.sp500, type: 'scatter', mode: 'lines', name: 'S&P 500', connectgaps: true, line: {color: '#185FA5', width: 2.3}},
-  {x: D.dates, y: D.sp500_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {color: '#A32D2D', width: 1.4, dash: 'dash'}}
-], 'S&P 500 + 200일선', D.sp500_range ? {yaxis: {range: D.sp500_range}} : undefined);
+  {x: D.dates, y: D.sp500, type: 'scatter', mode: 'lines', name: 'S&P 500', connectgaps: true, line: {color: '#185FA5', width: 2.3}}
+], 'S&P 500', D.sp500_range ? {yaxis: {range: D.sp500_range}} : undefined);
 
 safePlot('c_us_nasdaq', [
-  {x: D.dates, y: D.nasdaq, type: 'scatter', mode: 'lines', name: '나스닥', connectgaps: true, line: {color: '#534AB7', width: 2.3}},
-  {x: D.dates, y: D.nasdaq_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {color: '#A32D2D', width: 1.4, dash: 'dash'}}
-], '나스닥 + 200일선', D.nasdaq_range ? {yaxis: {range: D.nasdaq_range}} : undefined);
+  {x: D.dates, y: D.nasdaq, type: 'scatter', mode: 'lines', name: '나스닥', connectgaps: true, line: {color: '#534AB7', width: 2.3}}
+], '나스닥', D.nasdaq_range ? {yaxis: {range: D.nasdaq_range}} : undefined);
 
 safePlot('c_us_vix', [{x: D.dates, y: D.vix, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VIX', connectgaps: false, line: {color: '#A32D2D', width: 2.2}, fillcolor: 'rgba(163,45,45,0.10)'}], 'VIX 공포지수');
 
