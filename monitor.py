@@ -655,7 +655,6 @@ def update_data():
     # 반대매매/예탁금/외국인순매수/VKOSPI - 모두 수집 불가, 비활성
     market_cap = {"forced_sale": {}, "investor_deposit": {}}
     foreign_flow = {}
-    vkospi_result = {"type": "none", "data": None}
 
     series_dict = {
         "kospi": kospi, "kosdaq": kosdaq, "samsung": samsung, "hynix": hynix,
@@ -764,15 +763,7 @@ def compute_signals(df, extras=None):
             "description": f"200일선 대비 {dev_kospi:+.1f}%"
         }
 
-    vkospi_ser = pd.to_numeric(df["vkospi"], errors="coerce").dropna()
-    kr["KR6"] = {"name": "VKOSPI 공포지수", "level": 0, "description": "데이터 수집 중 (네이버)"}
-    if len(vkospi_ser):
-        v = float(vkospi_ser.iloc[-1])
-        kr["KR6"] = {
-            "name": "VKOSPI 공포지수",
-            "level": level_from_gap(v, [20, 30, 40]),
-            "description": f"현재 {v:.1f}"
-        }
+
 
     sp500_ser = pd.to_numeric(df["sp500"], errors="coerce").dropna()
     us["US1"] = {"name": "S&P500 일간 변동성", "level": 0, "description": "데이터 부족"}
@@ -1100,7 +1091,6 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     kosdaq = series_connected("kosdaq", min_val=300, max_daily_jump_pct=20)
     sp500 = series_connected("sp500", min_val=1000, max_daily_jump_pct=20)
     nasdaq = series_connected("nasdaq", min_val=1000, max_daily_jump_pct=20)
-    vkospi = series_connected("vkospi", min_val=3, max_val=200, max_daily_jump_pct=80)
     cor1m = series_connected("cor1m", min_val=1, max_val=100, max_daily_jump_pct=60)
 
     js_data = {
@@ -1113,7 +1103,6 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
         "kosdaq_base100": base100("kosdaq"),
         "samsung_base100": base100("samsung"),
         "hynix_base100": base100("hynix"),
-        "vkospi": vkospi,
         "credit": series_connected("credit_balance_eok", min_val=100000, max_daily_jump_pct=15),
         "sp500": sp500,
         "sp500_ma200": ma_series("sp500", 200),
@@ -1287,8 +1276,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
   <div class="section-title">차트</div>
   <div class="chart-grid">
     <div class="chart"><div id="c_kr_rel" style="height:320px;"></div></div>
-    <div class="chart"><div id="c_kr_vkospi" style="height:320px;"></div></div>
-  </div>
+    </div>
   <div class="chart-grid">
     <div class="chart"><div id="c_kr_kospi_abs" style="height:280px;"></div></div>
     <div class="chart"><div id="c_kr_kosdaq_abs" style="height:280px;"></div></div>
@@ -1367,13 +1355,6 @@ safePlot('c_kr_rel', [
   {{x: D.dates, y: D.kosdaq_base100, type: 'scatter', mode: 'lines', name: '코스닥', connectgaps: true, line: {{color: '#534AB7', width: 2.5}}}}
 ], '코스피 vs 코스닥 상대 추세 (Base 100)', {{yaxis: {{title: 'Base 100'}}}});
 
-safePlot('c_kr_vkospi', [
-  {{x: D.dates, y: D.vkospi, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VKOSPI', connectgaps: true, line: {{color: '#A32D2D', width: 2.2}}, fillcolor: 'rgba(163,45,45,0.10)'}}
-], 'VKOSPI 공포지수', {{yaxis: {{title: 'VKOSPI', range: [0, 80]}}, shapes: [
-  {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 20, y1: 20, line: {{color: '#BA7517', width: 1, dash: 'dot'}}}},
-  {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 30, y1: 30, line: {{color: '#A32D2D', width: 1, dash: 'dot'}}}},
-  {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 40, y1: 40, line: {{color: '#A32D2D', width: 1.5, dash: 'dash'}}}}
-]}});
 
 safePlot('c_kr_kospi_abs', [
   {{x: D.dates, y: D.kospi, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#185FA5', width: 2.3}}}},
