@@ -2033,15 +2033,15 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
     const colorMap = {{
       'SP500': '#6B7280',
       'IXIC':  '#1D4ED8',
-      'AAPL':  '#111827',
-      'MSFT':  '#06B6D4',
-      'GOOGL': '#16A34A',
-      'AMZN':  '#F59E0B',
-      'META':  '#7C3AED',
-      'NVDA':  '#84CC16',
-      'TSLA':  '#F43F5E',
-      'AVGO':  '#F97316',
-      'TSM':   '#06B6D4'
+      'AAPL':  '#111111',
+      'MSFT':  '#00B8FF',
+      'GOOGL': '#00C853',
+      'AMZN':  '#FF9800',
+      'META':  '#8A2BE2',
+      'NVDA':  '#B7FF00',
+      'TSLA':  '#FF1744',
+      'AVGO':  '#FF5A00',
+      'TSM':   '#00E5FF'
     }};
     const labelMap = {{
       'SP500': 'S&P500',
@@ -2082,22 +2082,25 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
       .map(t => ({name: t.name, key: (Object.keys(labelMap).find(k => labelMap[k] === t.name) || null), last: [...t.y].reverse().find(v => v !== null && v !== undefined)}))
       .filter(x => x.last !== undefined)
       .sort((a,b) => b.last - a.last);
-    const rankText = ranking.map((x,i) => {{
-      const c = colorMap[x.key] || '#333';
-      return '<span style="color:' + c + ';font-weight:700">' + (i+1) + '위 ' + x.name + ' ' + x.last.toFixed(1) + '</span>';
-    }}).join('<br>');
+    const rankAnnotations = ranking.map((x,i) => {{
+      return {{
+        xref: 'paper', yref: 'paper',
+        x: 0.012, y: 0.985 - (i * 0.028),
+        xanchor: 'left', yanchor: 'top',
+        align: 'left', showarrow: false,
+        text: (i+1) + '위 ' + x.name + ' ' + x.last.toFixed(1),
+        bgcolor: i === 0 ? 'rgba(255,255,255,0.90)' : 'rgba(255,255,255,0.0)',
+        bordercolor: i === 0 ? '#ddd' : 'rgba(0,0,0,0)',
+        borderwidth: i === 0 ? 1 : 0,
+        font: {{size: 12, color: colorMap[x.key] || '#333'}}
+      }};
+    }});
     Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
       title: {{text: 'M7 + 브로드컴 + TSMC + 나스닥 종합지수(IXIC) vs S&P500 누적 추세 (Base 100)', font: {{size: 14}}}},
       yaxis: {{title: 'Base 100'}},
       legend: {{orientation: 'h', y: -0.08, x: 0, xanchor: 'left'}},
       margin: {{t: 70, r: 50, b: 100, l: 55}},
-      annotations: [{{
-        xref: 'paper', yref: 'paper', x: 0.01, y: 0.99,
-        xanchor: 'left', yanchor: 'top', align: 'left', showarrow: false,
-        text: rankText,
-        bgcolor: 'rgba(255,255,255,0.85)', bordercolor: '#ddd', borderwidth: 1,
-        font: {size: 12, color: '#333'}
-      }}]
+      annotations: rankAnnotations
     }}), {{displayModeBar: false, responsive: true}});
   }} catch (e) {{ console.error('m7 plot:', e); showEmpty(id); }}
 }})();
