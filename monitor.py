@@ -749,10 +749,7 @@ def update_data():
     kr_idx      = safe("kr_market_idx", fetch_kr_market_index,  default={"vkospi": {}, "usdkrw": {}, "kospi_trprc": {}})
 
     series_dict = {
-        "kospi": kospi,
-        "vkospi": vkospi,
-        "usdkrw": usdkrw,
-        "kospi_trprc": kospi_trprc, "kosdaq": kosdaq, "samsung": samsung, "hynix": hynix,
+        "kospi": kospi, "kosdaq": kosdaq, "samsung": samsung, "hynix": hynix,
         "sp500": sp500, "nasdaq": nasdaq, "vix": vix, "nvda": nvda, "ust10y": ust10y,
         "cor1m": cor1m,
         **sectors
