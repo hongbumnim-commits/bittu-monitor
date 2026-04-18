@@ -52,7 +52,7 @@ ECOS_FOREIGN_HOLDING_URL = (
     "/064Y001/MM/{start}/{end}/0001000"
 )
 # 공공데이터포털 서비스키 (data.go.kr) - GitHub Secret에 DATA_GO_KR_KEY로 등록
-DATA_GO_KR_KEY = os.environ.get("DATA_GO_KR_KEY", "")
+DATA_GO_KR_KEY = os.environ.get("DATA_GO_KR_API_KEY", "")
 KOFIA_BASE = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService"
 
 def fetch_fred_series(series_id, name=None, days=LOOKBACK_DAYS * 3):
