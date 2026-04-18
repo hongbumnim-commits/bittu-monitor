@@ -528,6 +528,84 @@ def fetch_m7_plus_basket():
 
 
 # ================================================================
+# 외국인 일별 순매수 (코스피) - FinanceDataReader
+# ================================================================
+def _foreign_flow():
+    """
+    외국인 코스피 일별 순매수 (억원).
+    FDR의 KRX 외국인 순매수 데이터 사용.
+    Returns: {date: eok_value}
+    """
+    result = {}
+    try:
+        start = (TODAY - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+        end = TODAY.strftime("%Y-%m-%d")
+        # FDR 외국인 순매수: KRX/거래원 데이터
+        df = fdr.DataReader("KRX:FOREIGN", start, end)
+        if df is not None and not df.empty:
+            col = None
+            for c in df.columns:
+                if any(k in str(c).lower() for k in ["net", "순매수", "foreign"]):
+                    col = c
+                    break
+            if col is None:
+                col = df.columns[0]
+            s = pd.to_numeric(df[col], errors="coerce").dropna()
+            if not s.empty:
+                s.index = pd.to_datetime(s.index).date
+                for d, v in s.items():
+                    result[d] = round(float(v), 0)
+                print(f"  foreign flow (FDR KRX:FOREIGN): {len(result)} rows")
+                return result
+    except Exception as e:
+        print(f"  [info] foreign flow FDR KRX:FOREIGN: {e}")
+
+    # 폴백: KRX 웹 스크래핑
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Referer": "http://data.krx.co.kr/",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        # 최근 60영업일만 조회 (KRX는 단건)
+        end_dt = TODAY
+        start_dt = TODAY - dt.timedelta(days=90)
+        payload = {
+            "bld": "dbms/MDC/STAT/standard/MDCSTAT02303",
+            "locale": "ko_KR",
+            "mktId": "STK",
+            "strtDd": start_dt.strftime("%Y%m%d"),
+            "endDd": end_dt.strftime("%Y%m%d"),
+            "money": "1",
+            "csvxls_isNo": "false",
+        }
+        r = requests.post(
+            "http://data.krx.co.kr/comm/bfebas/PBMABAS002/retrieveData.cmd",
+            data=payload, headers=headers, timeout=20
+        )
+        if r.status_code == 200:
+            rows = r.json().get("output", [])
+            for row in rows:
+                date_str = str(row.get("TRD_DD", "")).replace("/", "").replace("-", "").strip()
+                net_str = str(row.get("FORN_NETBUY_AMT", "0")).replace(",", "")
+                if len(date_str) == 8:
+                    try:
+                        d = dt.date(int(date_str[:4]), int(date_str[4:6]), int(date_str[6:8]))
+                        result[d] = round(float(net_str) / 100, 0)  # 백만원 → 억원
+                    except Exception:
+                        continue
+            if result:
+                print(f"  foreign flow (KRX POST): {len(result)} rows")
+                return result
+    except Exception as e:
+        print(f"  [info] foreign flow KRX fallback: {e}")
+
+    print("  [warn] foreign flow: all sources failed, returning empty")
+    return result
+
+
+# ================================================================
 # 한국 외국인 주식 보유금액 & 비중 - index.go.kr (월별)
 # ================================================================
 def fetch_foreign_holding_kr():
