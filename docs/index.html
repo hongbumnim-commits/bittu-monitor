@@ -425,28 +425,10 @@ safePlot('c_us_cor1m', [{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines',
       .filter(x => x.last !== undefined && x.last !== null)
       .sort((a, b) => b.last - a.last);
 
-    // 랭킹 박스: shapes로 배경 + annotations로 텍스트
-    const lineHeight = 0.038;  // 줄 간격 (paper 좌표)
+    // 랭킹 annotations — 박스 없이 텍스트만, 각 줄 색 = 라인 색
+    const lineHeight = 0.038;
     const boxTop = 0.985;
     const boxLeft = 0.012;
-    const boxPadTop = 0.020;   // 위쪽 여백
-    const boxPadBot = 0.022;   // 아래쪽 여백 (첫 줄 아래로 좀 더 많이)
-    const boxWidth = 0.22;     // 박스 너비 (paper 좌표)
-
-    // 박스 shape (배경) — 11줄 전부 감싸도록 동적 높이
-    const rankShape = {
-      type: 'rect',
-      xref: 'paper', yref: 'paper',
-      x0: boxLeft - 0.006,
-      x1: boxLeft + boxWidth,
-      y0: boxTop - (ranking.length - 1) * lineHeight - boxPadBot,
-      y1: boxTop + boxPadTop,
-      fillcolor: 'rgba(255,255,255,0.95)',
-      line: {color: '#D1D5DB', width: 1},
-      layer: 'above'
-    };
-
-    // 각 순위 텍스트 (색 = 라인 색과 정확히 일치)
     const rankAnnotations = [];
     ranking.forEach((x, i) => {
       const color = colorMap[x.key] || '#333';
@@ -467,7 +449,6 @@ safePlot('c_us_cor1m', [{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines',
       legend: {orientation: 'h', y: -0.08, x: 0.5, xanchor: 'center', font: {size: 12}},
       margin: {t: 60, r: 40, b: 90, l: 60},
       annotations: rankAnnotations,
-      shapes: [rankShape],
       hovermode: 'x unified'
     }), {displayModeBar: false, responsive: true});
   } catch (e) { console.error('m7 plot:', e); showEmpty(id); }
