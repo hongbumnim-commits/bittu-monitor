@@ -162,22 +162,14 @@ def fetch_ust10y_fred():
     return s.rename("ust10y").dropna()
 
 
+
 def fetch_cor1m():
     """
     CBOE 1-Month Implied Correlation Index (^COR1M).
-    S&P 500 구성종목 간 내재상관 — '모두 같이 움직일 확률'을 옵션으로 측정.
-    높음(60+) = 시스템 공포, 낮음(<20) = 쏠림 극한 (역설적 위험).
-
-    소스 우선순위:
-      1) CBOE 공식 CDN CSV (cdn.cboe.com, VIX_History와 같은 패턴) — 가장 안정적
-      2) FDR의 ^COR1M
-      3) Yahoo chart API (여러 user-agent, 세션 쿠키 시도)
-      4) Investing.com historical
+    Yahoo 사용 안 함. 공식 CBOE CDN → Investing.com 순서만 사용.
     """
-    import urllib.parse
     from io import StringIO
 
-    # 1) CBOE 공식 CDN — 가장 안정적. GitHub IP도 막지 않음.
     cboe_urls = [
         "https://cdn.cboe.com/api/global/us_indices/daily_prices/COR1M_History.csv",
         "https://cdn.cboe.com/api/global/us_indices/daily_prices/COR1M_Historical_Data.csv",
@@ -187,137 +179,52 @@ def fetch_cor1m():
             r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
             if r.status_code != 200 or len(r.text) < 50:
                 continue
-            # CSV 구조: 보통 "DATE,OPEN,HIGH,LOW,CLOSE" 또는 "Date,Close"
-            content = r.text
-            # 헤더에 Cboe 경고문구 등이 섞여있을 수 있음 → 실제 헤더 줄 찾기
-            lines = content.splitlines()
+            lines = r.text.splitlines()
             header_idx = None
-            for i, line in enumerate(lines[:10]):
+            for i, line in enumerate(lines[:15]):
                 if re.search(r"date", line, re.IGNORECASE):
                     header_idx = i
                     break
             if header_idx is None:
                 continue
-            clean_csv = "\n".join(lines[header_idx:])
-            df_cboe = pd.read_csv(StringIO(clean_csv))
-            # 날짜 컬럼 찾기
-            date_col = None
-            for c in df_cboe.columns:
-                if re.search(r"date", str(c), re.IGNORECASE):
-                    date_col = c
-                    break
+            df_cboe = pd.read_csv(StringIO("\n".join(lines[header_idx:])))
+            date_col = next((c for c in df_cboe.columns if re.search(r"date", str(c), re.I)), None)
             if date_col is None:
                 continue
-            # 종가 컬럼 찾기
-            close_col = None
-            for c in df_cboe.columns:
-                cl = str(c).lower()
-                if "close" in cl or cl == "value":
-                    close_col = c
-                    break
+            close_col = next((c for c in df_cboe.columns if "close" in str(c).lower() or str(c).lower() == "value"), None)
             if close_col is None:
-                # 컬럼이 Date와 하나만 있으면 그게 종가
-                other_cols = [c for c in df_cboe.columns if c != date_col]
-                if len(other_cols) >= 1:
-                    close_col = other_cols[-1]  # 마지막 컬럼이 보통 종가
+                others = [c for c in df_cboe.columns if c != date_col]
+                if others:
+                    close_col = others[-1]
             if close_col is None:
                 continue
             df_cboe[date_col] = pd.to_datetime(df_cboe[date_col], errors="coerce")
-            df_cboe = df_cboe.dropna(subset=[date_col])
             df_cboe["_close"] = pd.to_numeric(df_cboe[close_col], errors="coerce")
-            df_cboe = df_cboe.dropna(subset=["_close"])
-            if df_cboe.empty:
-                continue
+            df_cboe = df_cboe.dropna(subset=[date_col, "_close"])
             cutoff = TODAY - dt.timedelta(days=LOOKBACK_DAYS)
             df_cboe = df_cboe[df_cboe[date_col].dt.date >= cutoff]
             if df_cboe.empty:
                 continue
-            s = pd.Series(
-                df_cboe["_close"].values,
-                index=df_cboe[date_col].dt.date.values,
-                name="cor1m",
-            )
+            s = pd.Series(df_cboe["_close"].values, index=df_cboe[date_col].dt.date.values, name="cor1m")
             last = float(s.iloc[-1])
             if 1 < last < 100:
-                print(f"  cor1m via cboe-cdn ({url.split('/')[-1]}): {len(s)} rows, latest {last:.2f}")
+                print(f"  cor1m via cboe-cdn: {len(s)} rows, latest {last:.2f}")
                 return s
         except Exception as e:
-            print(f"  [info] cboe cdn {url.split('/')[-1]}: {e}")
+            print(f"  [info] cboe cor1m: {e}")
 
-    # 2) FDR로 Yahoo ^COR1M 시도
     try:
-        df = fdr.DataReader("^COR1M")
-        if df is not None and not df.empty:
-            s = df["Close"] if "Close" in df.columns else df.iloc[:, 0]
-            s = s.dropna()
-            if not s.empty:
-                s.index = pd.to_datetime(s.index).date
-                cutoff = TODAY - dt.timedelta(days=LOOKBACK_DAYS)
-                s = s[s.index >= cutoff]
-                last = float(s.iloc[-1]) if not s.empty else None
-                if last and 1 < last < 100:
-                    print(f"  cor1m via fdr: {len(s)} rows, latest {last:.2f}")
-                    return s.rename("cor1m")
-    except Exception as e:
-        print(f"  [info] fdr cor1m failed: {e}")
-
-    # 3) Yahoo chart API — 세션 쿠키 + 다양한 user-agent 시도
-    end_ts = int(dt.datetime.now(KST).timestamp())
-    start_ts = end_ts - LOOKBACK_DAYS * 86400
-    user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-    ]
-    symbol_enc = urllib.parse.quote("^COR1M")
-    for ua in user_agents:
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": ua,
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://finance.yahoo.com/quote/%5ECOR1M/",
-        })
-        try:
-            session.get("https://finance.yahoo.com/", timeout=10)
-        except Exception:
-            pass
-        for url_base in [
-            f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol_enc}",
-            f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol_enc}",
-        ]:
-            try:
-                r = session.get(url_base, params={"period1": start_ts, "period2": end_ts, "interval": "1d"}, timeout=15)
-                if r.status_code != 200:
-                    continue
-                data = r.json()
-                result = data["chart"]["result"][0]
-                timestamps = result.get("timestamp", [])
-                closes = result["indicators"]["quote"][0].get("close", [])
-                if not timestamps or not closes:
-                    continue
-                dates = [dt.datetime.fromtimestamp(t, tz=dt.timezone.utc).date() for t in timestamps]
-                s = pd.Series(closes, index=dates, name="cor1m").dropna()
-                if s.empty:
-                    continue
-                last = float(s.iloc[-1])
-                if 1 < last < 100:
-                    print(f"  cor1m via yahoo: {len(s)} rows, latest {last:.2f}")
-                    return s
-            except Exception:
-                continue
-
-    # 4) Investing.com 폴백
-    try:
-        s = fetch_investing_history("https://www.investing.com/indices/cboe-1month-implied-correlation-historical-data", "cor1m")
+        s = fetch_investing_history(
+            "https://www.investing.com/indices/cboe-1month-implied-correlation-historical-data",
+            "cor1m"
+        )
         if not s.empty:
             return s
     except Exception as e:
         print(f"  [info] investing cor1m: {e}")
 
-    print(f"  [warn] cor1m: all sources failed")
+    print("  [warn] cor1m: all non-Yahoo sources failed")
     return pd.Series(dtype=float, name="cor1m")
-
-
 
 def fetch_investing_history(url, name, days=LOOKBACK_DAYS):
     """Investing.com historical page fallback scraper."""
@@ -356,66 +263,11 @@ def fetch_investing_history(url, name, days=LOOKBACK_DAYS):
         print(f"  [warn] investing {name}: {e}")
     return pd.Series(dtype=float, name=name)
 
-def fetch_naver_deposit():
-    url = "https://finance.naver.com/sise/sise_deposit.naver"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    r = requests.get(url, headers=headers, timeout=20)
-    r.encoding = "euc-kr"
-    result = {"credit_balance_eok": None, "forced_sale_eok": None}
-    try:
-        tables = pd.read_html(r.text, encoding="euc-kr")
-        for t in tables:
-            t_str = t.astype(str)
-            flat = " ".join([" ".join(row) for row in t_str.values.tolist()])
-            if ("신용잔고" in flat or "신용공여" in flat) and result["credit_balance_eok"] is None:
-                for row in t_str.values.tolist():
-                    if "신용" in " ".join(row):
-                        for cell in row:
-                            m = re.search(r"([\d,]+)", str(cell))
-                            if m:
-                                v = int(m.group(1).replace(",", ""))
-                                if v > 100000:
-                                    result["credit_balance_eok"] = v
-                                    break
-                        if result["credit_balance_eok"]:
-                            break
-            if "반대매매" in flat and result["forced_sale_eok"] is None:
-                for row in t_str.values.tolist():
-                    if "반대매매" in " ".join(row):
-                        for cell in row:
-                            m = re.search(r"([\d,]+)", str(cell))
-                            if m:
-                                try:
-                                    v = int(m.group(1).replace(",", ""))
-                                    if 10 <= v <= 100000:
-                                        result["forced_sale_eok"] = v
-                                        break
-                                except ValueError:
-                                    continue
-                        if result["forced_sale_eok"]:
-                            break
-    except Exception as e:
-        print(f"  [warn] deposit read_html: {e}")
-    if result["credit_balance_eok"] is None or result["forced_sale_eok"] is None:
-        try:
-            text = BeautifulSoup(r.text, "html.parser").get_text(" ", strip=True)
-            if result["credit_balance_eok"] is None:
-                m = re.search(r"신용잔고[^\d]*([\d,]+)", text)
-                if m:
-                    v = int(m.group(1).replace(",", ""))
-                    if v > 100000:
-                        result["credit_balance_eok"] = v
-            if result["forced_sale_eok"] is None:
-                m = re.search(r"반대매매[^\d]*([\d,]+)", text)
-                if m:
-                    v = int(m.group(1).replace(",", ""))
-                    if 10 <= v <= 100000:
-                        result["forced_sale_eok"] = v
-        except Exception as e:
-            print(f"  [warn] deposit regex: {e}")
-    print(f"  naver deposit: credit={result['credit_balance_eok']}, forced={result['forced_sale_eok']}")
-    return result
 
+def fetch_naver_deposit():
+    """GitHub Actions 환경에서 네이버 차단 가능성이 높아 비활성."""
+    print("  [info] naver deposit disabled")
+    return {"credit_balance_eok": None, "forced_sale_eok": None}
 
 def fetch_krx_foreign_investor_flow(days=LOOKBACK_DAYS):
     """
@@ -521,66 +373,11 @@ def fetch_krx_foreign_investor_flow(days=LOOKBACK_DAYS):
     return result
 
 
-def fetch_naver_foreign_flow():
-    """네이버 투자자 매매동향 스크래핑. 여러 엔드포인트 & UA 시도."""
-    urls = [
-        "https://finance.naver.com/sise/investorDealTrendDay.naver",
-        "https://m.stock.naver.com/investment/trend/invertor",  # 모바일 페이지 (다른 경로 시도용)
-    ]
-    user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-    ]
-    result = {}
-    for url in urls:
-        if result:
-            break
-        for ua in user_agents:
-            try:
-                r = requests.get(url, headers={"User-Agent": ua, "Referer": "https://finance.naver.com/"}, timeout=15)
-                if r.status_code != 200:
-                    continue
-                r.encoding = "euc-kr" if ".naver.com" in url else "utf-8"
-                try:
-                    tables = pd.read_html(r.text)
-                except Exception:
-                    continue
-                for t in tables:
-                    cols = [str(c) for c in t.columns]
-                    flat = " ".join(cols) + " " + " ".join([str(x) for x in t.values.flatten().tolist()[:50]])
-                    if "외국인" in flat and ("날짜" in flat or "일자" in flat):
-                        for row in t.itertuples(index=False):
-                            row_vals = [str(v) for v in row]
-                            date_match = None
-                            for v in row_vals:
-                                m = re.search(r"(\d{2,4})[./-](\d{1,2})[./-](\d{1,2})", v)
-                                if m:
-                                    y, mo, d = m.groups()
-                                    if len(y) == 2:
-                                        y = "20" + y
-                                    try:
-                                        date_match = dt.date(int(y), int(mo), int(d))
-                                        break
-                                    except Exception:
-                                        continue
-                            if not date_match:
-                                continue
-                            numeric_vals = []
-                            for v in row_vals:
-                                v_clean = v.replace(",", "").replace("+", "").strip()
-                                if re.match(r"^-?\d+$", v_clean):
-                                    numeric_vals.append(int(v_clean))
-                            if len(numeric_vals) >= 3:
-                                foreign_val = numeric_vals[1]
-                                result[date_match] = foreign_val
-                if result:
-                    break
-            except Exception as e:
-                print(f"  [warn] naver foreign {url[:40]}: {e}")
-                continue
-    print(f"  foreign flow (naver): {len(result)} days")
-    return result
 
+def fetch_naver_foreign_flow():
+    """GitHub Actions 환경에서 네이버 차단 가능성이 높아 비활성."""
+    print("  [info] naver foreign disabled")
+    return {}
 
 def fetch_hankyung_foreign_flow():
     """한경 외국인 매매 스크래핑 — 네이버 실패 시 폴백."""
@@ -626,29 +423,25 @@ def fetch_hankyung_foreign_flow():
     return result
 
 
+
 def fetch_foreign_flow_combined():
-    """여러 소스 순차 시도 — KRX 최우선 (공식 JSON API)."""
-    # 1) KRX 공식 JSON API (로그인 불필요, 가장 신뢰)
+    """여러 소스 순차 시도 — KRX JSON/CSV 우선, 네이버/야후 미사용."""
     try:
         result = fetch_krx_foreign_investor_flow()
         if result and len(result) >= 3:
             return result
     except Exception as e:
         print(f"  [info] krx foreign failed: {e}")
-    
-    # 2) 네이버 폴백
-    result = fetch_naver_foreign_flow()
-    if result:
-        return result
-    
-    # 3) 한경 폴백
-    result = fetch_hankyung_foreign_flow()
-    if result:
-        return result
-    
-    print(f"  [warn] foreign flow: all sources failed")
-    return {}
 
+    try:
+        result = fetch_hankyung_foreign_flow()
+        if result:
+            return result
+    except Exception as e:
+        print(f"  [info] hankyung foreign failed: {e}")
+
+    print("  [warn] foreign flow: KRX/Hankyung all sources failed")
+    return {}
 
 def fetch_krx_foreign_flow(days=LOOKBACK_DAYS):
     """
@@ -666,11 +459,11 @@ def fetch_krx_vkospi(days=LOOKBACK_DAYS):
     raise NotImplementedError("pykrx 방식은 사용하지 않습니다. fetch_fdr_vkospi를 쓰세요.")
 
 
+
 def fetch_stooq_csv(symbol, name="series", days=LOOKBACK_DAYS):
     """
     Stooq에서 CSV로 시계열 데이터 다운로드.
-    심볼 규칙: ^ticker (지수), ticker.us (미국주식), ticker.f (선물)
-    URL: https://stooq.com/q/d/l/?s=SYMBOL&i=d
+    국장(VKOSPI)에서는 사용하지 않음. 다른 데이터는 기존대로 사용 가능.
     """
     from io import StringIO
     url = f"https://stooq.com/q/d/l/?s={symbol}&i=d"
@@ -686,14 +479,14 @@ def fetch_stooq_csv(symbol, name="series", days=LOOKBACK_DAYS):
             return pd.Series(dtype=float, name=name)
         text = r.text.strip()
         if not text or "Date" not in text[:30]:
-            # CAPTCHA 또는 에러 페이지
             print(f"  [info] stooq {symbol}: invalid response (maybe CAPTCHA)")
             return pd.Series(dtype=float, name=name)
         df = pd.read_csv(StringIO(text))
         if df.empty or "Date" not in df.columns or "Close" not in df.columns:
             return pd.Series(dtype=float, name=name)
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-        df = df.dropna(subset=["Date"])
+        df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
+        df = df.dropna(subset=["Date", "Close"])
         cutoff = TODAY - dt.timedelta(days=days)
         df = df[df["Date"].dt.date >= cutoff]
         if df.empty:
@@ -708,112 +501,24 @@ def fetch_stooq_csv(symbol, name="series", days=LOOKBACK_DAYS):
 
 def fetch_fdr_vkospi():
     """
-    VKOSPI 지수 조회. 여러 소스 순차 시도 + 값 검증.
-    VKOSPI 정상 범위는 3~200 (2026년 중동전쟁 시 80+ 기록).
-    
-    소스 우선순위:
-      1) Stooq ^VKOSPI — GitHub IP 안 막음, 가장 안정적
-      2) Yahoo Finance chart API
-      3) FDR
-      4) Investing.com historical
-      5) 네이버 일일 spot 값 (최후)
+    VKOSPI 지수 조회.
+    Yahoo/네이버/FDR 미사용. Investing.com historical만 사용.
     """
-    import urllib.parse
-
-    cutoff = TODAY - dt.timedelta(days=LOOKBACK_DAYS)
-
-    # 1) Stooq — 가장 안정적인 공개 소스
-    for stooq_sym in ["^vkospi", "vkospi", "^ksvkospi"]:
-        s = fetch_stooq_csv(stooq_sym, name="vkospi")
-        if not s.empty:
-            last = float(s.iloc[-1])
-            if 3 <= last <= 200:
-                return s
-
-    # 2) Yahoo Finance chart API
-    end_ts = int(dt.datetime.now(KST).timestamp())
-    start_ts = end_ts - LOOKBACK_DAYS * 86400
-    yahoo_symbols = ["^VKOSPI", "^KSVKOSPI"]
-    for symbol in yahoo_symbols:
-        try:
-            url = (f"https://query1.finance.yahoo.com/v8/finance/chart/"
-                   f"{urllib.parse.quote(symbol)}"
-                   f"?period1={start_ts}&period2={end_ts}&interval=1d")
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-                              "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                "Accept": "application/json, text/plain, */*",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Referer": "https://finance.yahoo.com/",
-            }
-            r = requests.get(url, headers=headers, timeout=20)
-            if r.status_code != 200:
-                continue
-            data = r.json()
-            result = data["chart"]["result"][0]
-            timestamps = result.get("timestamp", [])
-            closes = result["indicators"]["quote"][0].get("close", [])
-            if not timestamps or not closes:
-                continue
-            dates = [dt.datetime.fromtimestamp(t, tz=dt.timezone.utc).date() for t in timestamps]
-            s = pd.Series(closes, index=dates, name="vkospi").dropna()
-            if s.empty:
-                continue
-            last = float(s.iloc[-1])
-            if 3 <= last <= 200:
-                print(f"  vkospi via yahoo ({symbol}): {len(s)} rows, latest {last:.2f}")
-                return s
-            else:
-                print(f"  [warn] yahoo {symbol} out of range ({last:.2f})")
-        except Exception as e:
-            print(f"  [warn] yahoo vkospi {symbol}: {e}")
-
-    # 3) FDR fallback
-    for symbol in ["VKOSPI", "^VKOSPI"]:
-        try:
-            df = fdr.DataReader(symbol)
-            if df is None or df.empty:
-                continue
-            s = df["Close"] if "Close" in df.columns else df.iloc[:, 0]
-            s = s.dropna()
-            if s.empty:
-                continue
-            last = float(s.iloc[-1])
-            if not (3 <= last <= 200):
-                print(f"  [warn] fdr {symbol} out of range ({last:.2f}), skip")
-                continue
-            s.index = pd.to_datetime(s.index).date
-            s = s[s.index >= cutoff]
-            print(f"  vkospi via fdr ({symbol}): {len(s)} rows, latest {last:.2f}")
-            return s.rename("vkospi")
-        except Exception as e:
-            print(f"  [warn] fdr {symbol}: {e}")
-
-    # 4) Investing.com fallback
     try:
-        s = fetch_investing_history("https://www.investing.com/indices/kospi-volatility-historical-data", "vkospi")
+        s = fetch_investing_history(
+            "https://www.investing.com/indices/kospi-volatility-historical-data",
+            "vkospi"
+        )
         if not s.empty:
             last = float(s.iloc[-1])
             if 3 <= last <= 200:
+                print(f"  vkospi via investing: {len(s)} rows, latest {last:.2f}")
                 return s
     except Exception as e:
         print(f"  [info] investing vkospi: {e}")
 
-    print(f"  [warn] vkospi: all sources failed")
+    print("  [warn] vkospi: investing only mode failed")
     return pd.Series(dtype=float, name="vkospi")
-
-
-# ================================================================
-# 공공데이터포털 (data.go.kr) - 금융위원회_금융투자협회종합통계정보
-# ================================================================
-# Base URL: https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService
-# 인증: serviceKey 파라미터 (DATA_GO_KR_API_KEY 환경변수)
-# 엔드포인트:
-#   - getGrantingOfCreditBalanceInfo: 신용공여잔고추이
-#   - getSecuritiesMarketTotalCapitalInfo: 증시자금추이 (미수금/반대매매 포함)
-
-DATA_GO_KR_BASE = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService"
-
 
 def _data_go_kr_fetch(endpoint, extra_params=None, max_pages=10, num_rows=200):
     """
@@ -941,26 +646,11 @@ def fetch_securities_market_capital(days=LOOKBACK_DAYS):
     return {"forced_sale": forced, "investor_deposit": deposit}
 
 
-def fetch_vkospi_naver():
-    """[DEPRECATED] 네이버 VKOSPI 단일 스팟값 스크래핑 — fallback용."""
-    url = "https://finance.naver.com/sise/sise_index.naver?code=VKOSPI"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    r = requests.get(url, headers=headers, timeout=15)
-    r.encoding = "euc-kr"
-    soup = BeautifulSoup(r.text, "html.parser")
-    try:
-        elem = soup.select_one("#now_value")
-        if elem:
-            v = float(elem.text.replace(",", "").strip())
-            return v
-    except Exception:
-        pass
-    text = soup.get_text(" ", strip=True)
-    m = re.search(r"VKOSPI[^\d]{0,20}([\d]+\.[\d]+)", text)
-    if m:
-        return float(m.group(1))
-    return None
 
+def fetch_vkospi_naver():
+    """GitHub Actions 환경에서 네이버 차단 가능성이 높아 비활성."""
+    print("  [info] naver vkospi disabled")
+    return None
 
 def fetch_sector_basket(tickers):
     """섹터 종목 바스켓을 Base 100 누적 추세로 반환."""
@@ -1324,11 +1014,7 @@ def update_data():
         try:
             return fetch_credit_balance()  # {date: eok}
         except Exception as e:
-            print(f"  [info] data.go.kr credit failed, fallback to naver: {e}")
-            dep = fetch_naver_deposit()
-            # 네이버는 단일 스팟값만 반환 → 최신일 하나만
-            if dep.get("credit_balance_eok"):
-                return {TODAY: dep["credit_balance_eok"]}
+            print(f"  [info] data.go.kr credit failed: {e}")
             return {}
 
     # 2. 증시자금추이 (반대매매, 예탁금) — data.go.kr 우선, 실패 시 네이버
@@ -1336,12 +1022,8 @@ def update_data():
         try:
             return fetch_securities_market_capital()  # {'forced_sale': {...}, 'investor_deposit': {...}}
         except Exception as e:
-            print(f"  [info] data.go.kr market capital failed, fallback to naver: {e}")
-            dep = fetch_naver_deposit()
-            result = {"forced_sale": {}, "investor_deposit": {}}
-            if dep.get("forced_sale_eok"):
-                result["forced_sale"][TODAY] = dep["forced_sale_eok"]
-            return result
+            print(f"  [info] data.go.kr market capital failed: {e}")
+            return {"forced_sale": {}, "investor_deposit": {}}
 
     # 3. 외국인 순매수 — 네이버 여러 경로 + 한경 폴백
     def _foreign_flow():
@@ -1356,12 +1038,6 @@ def update_data():
         series = fetch_fdr_vkospi()
         if not series.empty:
             return {"type": "series", "data": series}
-        try:
-            v = fetch_vkospi_naver()
-            if v is not None:
-                return {"type": "spot", "data": v}
-        except Exception as e:
-            print(f"  [warn] naver vkospi also failed: {e}")
         return {"type": "none", "data": None}
 
     credit_map = safe("credit", _credit_balance_with_fallback, default={})
