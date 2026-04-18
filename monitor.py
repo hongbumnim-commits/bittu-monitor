@@ -1884,7 +1884,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
   <div class="chart"><div id="c_us_rate" style="height:280px;"></div></div>
   <div class="chart"><div id="c_us_cor1m" style="height:300px;"></div></div>
   <div class="chart"><div id="c_us_margin" style="height:320px;"></div></div>
-  <div class="chart"><div id="c_us_m7" style="height:1840px;"></div></div>
+  <div class="chart"><div id="c_us_m7" style="height:900px;"></div></div>
   <div class="chart"><div id="c_us_gl" style="height:380px;"></div></div>
 </div>
 
@@ -2020,7 +2020,7 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
   }} catch (e) {{ console.error('margin plot:', e); showEmpty(id); }}
 }})();
 
-// === M7 + AVGO + TSM vs S&P500 (Base 100) ===
+// === M7 + AVGO + TSM + IXIC vs S&P500 (Base 100) ===
 (function() {{
   const id = 'c_us_m7';
   const el = document.getElementById(id);
@@ -2030,22 +2030,23 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
     return;
   }}
   try {{
+    // 서로 잘 구분되는 11개 고대비 팔레트 (겹침 최소화)
     const colorMap = {{
-      'SP500': '#6B7280',
-      'IXIC':  '#1D4ED8',
-      'AAPL':  '#111111',
-      'MSFT':  '#00B8FF',
-      'GOOGL': '#00C853',
-      'AMZN':  '#FF9800',
-      'META':  '#8A2BE2',
-      'NVDA':  '#B7FF00',
-      'TSLA':  '#FF1744',
-      'AVGO':  '#FF5A00',
-      'TSM':   '#00E5FF'
+      'SP500': '#6B7280',  // 회색 (벤치마크)
+      'IXIC':  '#1E3A8A',  // 진청색 (벤치마크)
+      'AAPL':  '#111827',  // 블랙
+      'MSFT':  '#0EA5E9',  // 하늘
+      'GOOGL': '#10B981',  // 에메랄드
+      'AMZN':  '#F59E0B',  // 앰버
+      'META':  '#7C3AED',  // 바이올렛
+      'NVDA':  '#84CC16',  // 라임
+      'TSLA':  '#DC2626',  // 빨강
+      'AVGO':  '#EA580C',  // 오렌지
+      'TSM':   '#DB2777'   // 핑크
     }};
     const labelMap = {{
       'SP500': 'S&P500',
-      'IXIC':  '나스닥 종합지수(IXIC)',
+      'IXIC':  '나스닥 (IXIC)',
       'AAPL':  '애플 AAPL',
       'MSFT':  'MS MSFT',
       'GOOGL': '구글 GOOGL',
@@ -2070,37 +2071,68 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
         mode: 'lines',
         name: labelMap[t] || t,
         connectgaps: true,
+        _key: t,  // 내부 참조용
         line: {{
           color: colorMap[t] || '#666',
-          width: (isSP || isNas) ? 2.2 : 2.0,
-          dash: isSP ? 'dot' : (isNas ? 'dash' : 'solid')
-        }}
+          width: (isSP || isNas) ? 2.6 : 2.4,
+          dash: isSP ? 'dot' : (isNas ? 'dash' : 'solid'),
+          shape: 'spline',
+          smoothing: 1.0
+        }},
+        hoverlabel: {{font: {{size: 13}}}}
       }});
     }});
     if (traces.length === 0) {{ showEmpty(id); return; }}
+
+    // 랭킹 계산 — 최신 값 기준 내림차순
     const ranking = traces
-      .map(t => ({name: t.name, key: (Object.keys(labelMap).find(k => labelMap[k] === t.name) || null), last: [...t.y].reverse().find(v => v !== null && v !== undefined)}))
-      .filter(x => x.last !== undefined)
-      .sort((a,b) => b.last - a.last);
-    const rankAnnotations = ranking.map((x,i) => {{
-      return {{
+      .map(t => {{
+        const lastVal = [...t.y].reverse().find(v => v !== null && v !== undefined);
+        return {{key: t._key, name: t.name, last: lastVal}};
+      }})
+      .filter(x => x.last !== undefined && x.last !== null)
+      .sort((a, b) => b.last - a.last);
+
+    // 랭킹 박스: 왼쪽 상단, 각 줄 색은 해당 라인 색과 일치
+    const lineHeight = 0.035;  // 줄 간격 (paper 좌표)
+    const boxTop = 0.985;
+    const boxLeft = 0.012;
+    const rankAnnotations = [];
+
+    // 1) 배경 박스 (투명 흰색)
+    rankAnnotations.push({{
+      xref: 'paper', yref: 'paper',
+      x: boxLeft - 0.003, y: boxTop + 0.012,
+      xanchor: 'left', yanchor: 'top',
+      text: '', showarrow: false,
+      width: 210,
+      height: (ranking.length * lineHeight * 100) + 18,
+      bgcolor: 'rgba(255,255,255,0.94)',
+      bordercolor: '#D1D5DB', borderwidth: 1,
+      borderpad: 6
+    }});
+
+    // 2) 각 순위 텍스트 (색 = 라인 색과 정확히 일치, 크기 15)
+    ranking.forEach((x, i) => {{
+      const color = colorMap[x.key] || '#333';
+      rankAnnotations.push({{
         xref: 'paper', yref: 'paper',
-        x: 0.012, y: 0.985 - (i * 0.028),
+        x: boxLeft, y: boxTop - (i * lineHeight),
         xanchor: 'left', yanchor: 'top',
         align: 'left', showarrow: false,
-        text: (i+1) + '위 ' + x.name + ' ' + x.last.toFixed(1),
-        bgcolor: i === 0 ? 'rgba(255,255,255,0.90)' : 'rgba(255,255,255,0.0)',
-        bordercolor: i === 0 ? '#ddd' : 'rgba(0,0,0,0)',
-        borderwidth: i === 0 ? 1 : 0,
-        font: {{size: 12, color: colorMap[x.key] || '#333'}}
-      }};
+        text: '<b>' + (i + 1) + '위</b> ' + x.name + '<b> ' + x.last.toFixed(1) + '</b>',
+        font: {{size: 15, color: color, family: 'system-ui'}}
+      }});
     }});
+
     Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
-      title: {{text: 'M7 + 브로드컴 + TSMC + 나스닥 종합지수(IXIC) vs S&P500 누적 추세 (Base 100)', font: {{size: 14}}}},
-      yaxis: {{title: 'Base 100'}},
-      legend: {{orientation: 'h', y: -0.08, x: 0, xanchor: 'left'}},
-      margin: {{t: 70, r: 50, b: 100, l: 55}},
-      annotations: rankAnnotations
+      title: {{text: 'M7 + 브로드컴 + TSMC + 나스닥 vs S&P500 누적 추세 (Base 100)', font: {{size: 16}}}},
+      yaxis: {{title: {{text: 'Base 100', font: {{size: 13}}}}, gridcolor: '#F3F4F6'}},
+      xaxis: {{gridcolor: '#F3F4F6'}},
+      legend: {{orientation: 'h', y: -0.08, x: 0.5, xanchor: 'center', font: {{size: 12}}}},
+      margin: {{t: 60, r: 40, b: 90, l: 60}},
+      annotations: rankAnnotations,
+      hovermode: 'x unified'
     }}), {{displayModeBar: false, responsive: true}});
   }} catch (e) {{ console.error('m7 plot:', e); showEmpty(id); }}
 }})();
