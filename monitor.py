@@ -43,6 +43,7 @@ GLOBAL_LIQUIDITY_SERIES = {
 # 공공데이터포털 서비스키 (data.go.kr) - GitHub Secret: DATA_GO_KR_API_KEY
 DATA_GO_KR_KEY = os.environ.get("DATA_GO_KR_API_KEY", "")
 KOFIA_BASE = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService"
+MARKET_INDEX_BASE = "https://apis.data.go.kr/1160100/service/GetMarketIndexInfoService"
 
 def fetch_fred_series(series_id, name=None, days=LOOKBACK_DAYS * 3):
     start = (TODAY - dt.timedelta(days=days)).strftime("%Y-%m-%d")
@@ -524,6 +525,100 @@ def fetch_m7_plus_basket():
 # ================================================================
 
 # ================================================================
+# data.go.kr 지수시세 - VKOSPI / 원달러 / 코스피 거래대금
+# ================================================================
+KR_INDEX_MAP = {
+    "코스피변동성지수": "vkospi",
+    "미국달러":         "usdkrw",
+    "코스피":           "kospi_trprc",   # 거래대금용 (clpr은 FDR로 이미 수집)
+}
+
+def fetch_kr_market_index():
+    """
+    GetMarketIndexInfoService/getStockMarketIndex
+    - VKOSPI (코스피변동성지수) : clpr
+    - 원달러 환율 (미국달러)    : clpr
+    - 코스피 거래대금           : trPrc (조원)
+    Returns: {
+        "vkospi":      {date: float},
+        "usdkrw":      {date: float},
+        "kospi_trprc": {date: float},  # 조원
+    }
+    """
+    if not DATA_GO_KR_KEY:
+        print("  [warn] fetch_kr_market_index: DATA_GO_KR_API_KEY 없음")
+        return {k: {} for k in ["vkospi", "usdkrw", "kospi_trprc"]}
+
+    result = {k: {} for k in ["vkospi", "usdkrw", "kospi_trprc"]}
+    start_dt = (TODAY - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y%m%d")
+    end_dt   = TODAY.strftime("%Y%m%d")
+
+    for idx_nm, key in KR_INDEX_MAP.items():
+        page, per_page = 1, 100
+        while True:
+            params = {
+                "serviceKey": DATA_GO_KR_KEY,
+                "pageNo":     page,
+                "numOfRows":  per_page,
+                "resultType": "json",
+                "idxNm":      idx_nm,
+                "beginBasDt": start_dt,
+                "endBasDt":   end_dt,
+            }
+            try:
+                r = requests.get(
+                    f"{MARKET_INDEX_BASE}/getStockMarketIndex",
+                    params=params, timeout=20
+                )
+                r.raise_for_status()
+                body  = r.json().get("response", {}).get("body", {})
+                items = body.get("items", {})
+                if not items:
+                    break
+                rows = items.get("item", [])
+                if isinstance(rows, dict):
+                    rows = [rows]
+                for row in rows:
+                    ds = str(row.get("basDt", "")).strip()
+                    if len(ds) != 8:
+                        continue
+                    try:
+                        d = dt.date(int(ds[:4]), int(ds[4:6]), int(ds[6:8]))
+                    except Exception:
+                        continue
+                    if key == "kospi_trprc":
+                        raw = str(row.get("trPrc", "")).replace(",", "").strip()
+                        if raw not in ("", "nan", "-"):
+                            try:
+                                result[key][d] = round(float(raw) / 1e12, 2)  # 원 → 조원
+                            except Exception:
+                                pass
+                    else:
+                        raw = str(row.get("clpr", "")).replace(",", "").strip()
+                        if raw not in ("", "nan", "-"):
+                            try:
+                                result[key][d] = float(raw)
+                            except Exception:
+                                pass
+                total = int(body.get("totalCount", 0))
+                if page * per_page >= total:
+                    break
+                page += 1
+            except Exception as e:
+                print(f"  [warn] fetch_kr_market_index {idx_nm} p{page}: {e}")
+                break
+
+        if result[key]:
+            latest = max(result[key])
+            print(f"  {idx_nm} ({key}): {len(result[key])}rows, latest {latest}: {result[key][latest]}")
+        else:
+            print(f"  [warn] {idx_nm}: 0 rows")
+
+    return result
+
+
+
+# ================================================================
 # data.go.kr 금융투자협회 API - 신용공여잔고추이 (잘 됨)
 # ================================================================
 def fetch_credit_balance():
@@ -592,7 +687,7 @@ def fetch_foreign_holding_kr():
 MAIN_COLS = [
     "date",
     "kospi", "kosdaq", "samsung", "hynix",
-    "credit_balance_eok",
+    "credit_balance_eok", "vkospi", "usdkrw", "kospi_trprc",
     "samsung_ret_pct", "hynix_ret_pct",
     "sp500", "nasdaq", "vix", "nvda", "ust10y", "cor1m",
     "sec_반도체", "sec_방산조선", "sec_바이오", "sec_2차전지", "sec_금융",
@@ -650,14 +745,14 @@ def update_data():
         sectors[f"sec_{name}"] = s.rename(f"sec_{name}")
 
     # --- 한국 시장 펀더멘털 데이터 ---
-    # 신용공여잔고 (data.go.kr KOFIA) - 잘 됨
-    credit_map = safe("credit", fetch_credit_balance, default={})
-    # 반대매매/예탁금/외국인순매수/VKOSPI - 모두 수집 불가, 비활성
-    market_cap = {"forced_sale": {}, "investor_deposit": {}}
-    foreign_flow = {}
+    credit_map  = safe("credit",        fetch_credit_balance,   default={})
+    kr_idx      = safe("kr_market_idx", fetch_kr_market_index,  default={"vkospi": {}, "usdkrw": {}, "kospi_trprc": {}})
 
     series_dict = {
-        "kospi": kospi, "kosdaq": kosdaq, "samsung": samsung, "hynix": hynix,
+        "kospi": kospi,
+        "vkospi": vkospi,
+        "usdkrw": usdkrw,
+        "kospi_trprc": kospi_trprc, "kosdaq": kosdaq, "samsung": samsung, "hynix": hynix,
         "sp500": sp500, "nasdaq": nasdaq, "vix": vix, "nvda": nvda, "ust10y": ust10y,
         "cor1m": cor1m,
         **sectors
@@ -667,11 +762,19 @@ def update_data():
     df["samsung_ret_pct"] = df["samsung"].pct_change(fill_method=None) * 100
     df["hynix_ret_pct"] = df["hynix"].pct_change(fill_method=None) * 100
     df["credit_balance_eok"] = None
+    df["vkospi"]            = None
+    df["usdkrw"]            = None
+    df["kospi_trprc"]       = None
 
-    # 신용공여잔고 채우기 (전체 시계열)
-    for cdate, cval in credit_map.items():
-        if cdate in df["date"].values:
-            df.loc[df["date"] == cdate, "credit_balance_eok"] = cval
+    # 신용공여잔고
+    for d, v in credit_map.items():
+        if d in df["date"].values:
+            df.loc[df["date"] == d, "credit_balance_eok"] = v
+    # VKOSPI / 원달러 / 코스피 거래대금
+    for col, src in [("vkospi", "vkospi"), ("usdkrw", "usdkrw"), ("kospi_trprc", "kospi_trprc")]:
+        for d, v in kr_idx.get(src, {}).items():
+            if d in df["date"].values:
+                df.loc[df["date"] == d, col] = v
 
     for c in MAIN_COLS:
         if c not in df.columns:
@@ -869,6 +972,48 @@ def compute_signals(df, extras=None):
                     "level": level_from_gap(debt_growth_3m, [3, 7, 12]),
                     "description": f"3개월 증가율 {debt_growth_3m:+.1f}% · ${latest_v:.0f}B"
                 }
+
+
+    # KR6: VKOSPI 공포지수 (data.go.kr)
+    vkospi_ser = pd.to_numeric(df["vkospi"], errors="coerce").dropna()
+    kr["KR6"] = {"name": "VKOSPI 공포지수", "level": 0, "description": "데이터 수집 중"}
+    if len(vkospi_ser):
+        v = float(vkospi_ser.iloc[-1])
+        kr["KR6"] = {
+            "name": "VKOSPI 공포지수",
+            "level": level_from_gap(v, [20, 30, 40]),
+            "description": f"현재 {v:.1f} (20↑주의 / 30↑경계 / 40↑위험)"
+        }
+
+    # KR7: 원달러 환율 급등 (1주 변화)
+    usdkrw_ser = pd.to_numeric(df["usdkrw"], errors="coerce").dropna()
+    kr["KR7"] = {"name": "원달러 환율", "level": 0, "description": "데이터 수집 중"}
+    if len(usdkrw_ser) >= 5:
+        cur_fx = float(usdkrw_ser.iloc[-1])
+        delta_fx = float(usdkrw_ser.iloc[-1] - usdkrw_ser.iloc[-5])
+        pct_fx = delta_fx / float(usdkrw_ser.iloc[-5]) * 100
+        kr["KR7"] = {
+            "name": "원달러 환율 1주 변화",
+            "level": level_from_gap(pct_fx, [1.0, 2.0, 3.5]),
+            "description": f"현재 {cur_fx:.1f}원 / 1주 {delta_fx:+.1f}원 ({pct_fx:+.2f}%)"
+        }
+
+    # KR8: 코스피 거래대금 (5일 평균 vs 20일 평균 비율로 냉각 감지)
+    trprc_ser = pd.to_numeric(df["kospi_trprc"], errors="coerce").dropna()
+    kr["KR8"] = {"name": "코스피 거래대금", "level": 0, "description": "데이터 수집 중"}
+    if len(trprc_ser) >= 20:
+        avg5  = float(trprc_ser.tail(5).mean())
+        avg20 = float(trprc_ser.tail(20).mean())
+        latest_tr = float(trprc_ser.iloc[-1])
+        if avg20 > 0:
+            ratio = avg5 / avg20  # 1.0이면 정상, 0.5면 절반으로 급감
+            drop_pct = (1 - ratio) * 100
+            # 거래대금 급감 = 시장 냉각 (역방향: 급감할수록 위험)
+            kr["KR8"] = {
+                "name": "코스피 거래대금 냉각",
+                "level": level_from_gap(drop_pct, [20, 35, 50]),
+                "description": f"최근 {latest_tr:.1f}조 / 5일평균 {avg5:.1f}조 / 20일평균 {avg20:.1f}조 (5일/20일 {ratio:.2f}배)"
+            }
 
     kr_score = sum(s["level"] for s in kr.values())
     us_score = sum(s["level"] for s in us.values())
@@ -1087,7 +1232,10 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
 
     dates = [d.strftime("%Y-%m-%d") for d in df_plot["date"]] if not df_plot.empty else []
 
-    kospi = series_connected("kospi", min_val=1000, max_daily_jump_pct=20)
+    kospi    = series_connected("kospi",      min_val=1000, max_daily_jump_pct=20)
+    vkospi   = series_connected("vkospi",     min_val=3,    max_val=200, max_daily_jump_pct=80)
+    usdkrw   = series_connected("usdkrw",     min_val=800,  max_val=2000, max_daily_jump_pct=10)
+    kospi_trprc = series_nullable("kospi_trprc")
     kosdaq = series_connected("kosdaq", min_val=300, max_daily_jump_pct=20)
     sp500 = series_connected("sp500", min_val=1000, max_daily_jump_pct=20)
     nasdaq = series_connected("nasdaq", min_val=1000, max_daily_jump_pct=20)
@@ -1282,6 +1430,11 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     <div class="chart"><div id="c_kr_kosdaq_abs" style="height:280px;"></div></div>
   </div>
   <div class="chart"><div id="c_kr_credit" style="height:300px;"></div></div>
+  <div class="chart-grid">
+    <div class="chart"><div id="c_kr_vkospi" style="height:280px;"></div></div>
+    <div class="chart"><div id="c_kr_usdkrw" style="height:280px;"></div></div>
+  </div>
+  <div class="chart"><div id="c_kr_trprc" style="height:260px;"></div></div>
   <div class="chart"><div id="c_kr_semi" style="height:280px;"></div></div>
   <div class="chart"><div id="c_kr_sector" style="height:320px;"></div></div>
 </div>
@@ -1371,9 +1524,41 @@ safePlot('c_kr_credit', [
   {{x: D.dates, y: D.credit, type: 'scatter', mode: 'lines', name: '신용잔고(억)', yaxis: 'y2', connectgaps: false, line: {{color: '#993C1D', width: 2, dash: 'dash'}}}}
 ], '코스피 vs 신용잔고', {{yaxis: {{title: '코스피'}}, yaxis2: {{title: '잔고(억)', overlaying: 'y', side: 'right'}}}});
 
-safePlot('c_kr_forced', [{{x: D.dates, y: D.forced, type: 'bar', name: '반대매매(억)', marker: {{color: (D.forced || []).map(v => v >= 600 ? '#A32D2D' : v >= 400 ? '#D85A30' : v >= 200 ? '#BA7517' : '#888')}}}}], '일일 반대매매');
 
-safePlot('c_kr_foreign', [{{x: D.dates, y: D.foreign, type: 'bar', name: '외국인(억)', marker: {{color: (D.foreign || []).map(v => (v ?? 0) < 0 ? '#A32D2D' : '#1D9E75')}}}}], '외국인 일별 순매수/매도 (코스피+코스닥)');
+safePlot('c_kr_vkospi', [
+  {{x: D.dates, y: D.vkospi, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VKOSPI', connectgaps: true, line: {{color: '#A32D2D', width: 2.2}}, fillcolor: 'rgba(163,45,45,0.10)'}}
+], 'VKOSPI 공포지수', {{yaxis: {{title: '지수'}},
+  shapes: [
+    {{type:'line',xref:'paper',x0:0,x1:1,y0:20,y1:20,line:{{color:'#BA7517',width:1,dash:'dot'}}}},
+    {{type:'line',xref:'paper',x0:0,x1:1,y0:30,y1:30,line:{{color:'#D85A30',width:1,dash:'dot'}}}},
+    {{type:'line',xref:'paper',x0:0,x1:1,y0:40,y1:40,line:{{color:'#A32D2D',width:1,dash:'dot'}}}}
+  ]}});
+
+safePlot('c_kr_usdkrw', [
+  {{x: D.dates, y: D.usdkrw, type: 'scatter', mode: 'lines', name: '원/달러', connectgaps: true, line: {{color: '#185FA5', width: 2.2}}}}
+], '원/달러 환율', {{yaxis: {{title: '원'}}}});
+
+(function() {{
+  const id = 'c_kr_trprc';
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (!D.kospi_trprc || !hasValues(D.kospi_trprc)) {{ showEmpty(id); return; }}
+  try {{
+    const window20 = 20;
+    const avg20 = D.kospi_trprc.map((_, i, arr) => {{
+      const slice = arr.slice(Math.max(0,i-window20+1), i+1).filter(x => x !== null && x !== undefined);
+      return slice.length ? slice.reduce((s,x)=>s+x,0)/slice.length : null;
+    }});
+    Plotly.newPlot(id, [
+      {{x: D.dates, y: D.kospi_trprc, type: 'bar', name: '거래대금(조)', marker: {{color: '#4B8BBE', opacity: 0.7}}}},
+      {{x: D.dates, y: avg20, type: 'scatter', mode: 'lines', name: '20일평균', connectgaps: true, line: {{color: '#A32D2D', width: 1.8, dash: 'dot'}}}}
+    ], Object.assign({{}}, base, {{
+      title: {{text: '코스피 일별 거래대금', font: {{size: 14}}}},
+      yaxis: {{title: '조원'}},
+      legend: {{orientation: 'h', y: -0.18}}
+    }}), {{displayModeBar: false, responsive: true}});
+  }} catch(e) {{ console.error('trprc:', e); showEmpty(id); }}
+}})();
 
 safePlot('c_kr_semi', [
   {{x: D.dates, y: D.kospi_base100, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#888', width: 1.2, dash: 'dot'}}}},
