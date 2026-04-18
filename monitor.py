@@ -525,100 +525,157 @@ def fetch_m7_plus_basket():
 # ================================================================
 
 # ================================================================
-# data.go.kr 지수시세 - VKOSPI / 원달러 / 코스피 거래대금
 # ================================================================
-KR_INDEX_MAP = {
-    "코스피변동성지수": "vkospi",
-    "미국달러":         "usdkrw",
-    "코스피":           "kospi_trprc",   # 거래대금용 (clpr은 FDR로 이미 수집)
-}
+# data.go.kr 지수시세 - VKOSPI / 원달러 / 코스피 거래대금 + ESG
+# ================================================================
+VKOSPI_KEYWORDS = ["변동성"]
+USDKRW_KEYWORDS = ["미국달러", "달러", "USD"]
+KOSPI_KEYWORDS  = ["코스피"]
+
+ESG_BASE = "https://apis.data.go.kr/1160100/service/GetESGIdxInfoService"
+
+
+def _kofia_index_fetch(keywords, start_dt, end_dt, val_field="clpr"):
+    """전체 조회 후 키워드로 지수명 매칭. Returns: ({date:float}, matched_name)"""
+    result = {}
+    page, per_page = 1, 100
+    matched_name = None
+    while True:
+        params = {
+            "serviceKey": DATA_GO_KR_KEY,
+            "pageNo": page, "numOfRows": per_page,
+            "resultType": "json",
+            "beginBasDt": start_dt, "endBasDt": end_dt,
+        }
+        if matched_name:
+            params["idxNm"] = matched_name
+        try:
+            r = requests.get(f"{MARKET_INDEX_BASE}/getStockMarketIndex",
+                             params=params, timeout=20)
+            r.raise_for_status()
+            body  = r.json().get("response", {}).get("body", {})
+            items = body.get("items", {})
+            if not items:
+                break
+            rows = items.get("item", [])
+            if isinstance(rows, dict):
+                rows = [rows]
+            for row in rows:
+                nm = str(row.get("idxNm", ""))
+                ds = str(row.get("basDt", "")).strip()
+                if matched_name is None:
+                    if any(kw in nm for kw in keywords):
+                        matched_name = nm
+                    else:
+                        continue
+                elif nm != matched_name:
+                    continue
+                if len(ds) != 8:
+                    continue
+                try:
+                    d = dt.date(int(ds[:4]), int(ds[4:6]), int(ds[6:8]))
+                except Exception:
+                    continue
+                raw = str(row.get(val_field, "")).replace(",", "").strip()
+                if raw not in ("", "nan", "-", "0"):
+                    try:
+                        result[d] = float(raw)
+                    except Exception:
+                        pass
+            total = int(body.get("totalCount", 0))
+            if page * per_page >= total:
+                break
+            page += 1
+        except Exception as e:
+            print(f"  [warn] kofia_index p{page}: {e}")
+            break
+    return result, matched_name
+
 
 def fetch_kr_market_index():
-    """
-    GetMarketIndexInfoService/getStockMarketIndex
-    - VKOSPI (코스피변동성지수) : clpr
-    - 원달러 환율 (미국달러)    : clpr
-    - 코스피 거래대금           : trPrc (조원)
-    Returns: {
-        "vkospi":      {date: float},
-        "usdkrw":      {date: float},
-        "kospi_trprc": {date: float},  # 조원
-    }
-    """
+    """VKOSPI / 원달러 / 코스피 거래대금 수집."""
     if not DATA_GO_KR_KEY:
         print("  [warn] fetch_kr_market_index: DATA_GO_KR_API_KEY 없음")
-        return {k: {} for k in ["vkospi", "usdkrw", "kospi_trprc"]}
+        return {"vkospi": {}, "usdkrw": {}, "kospi_trprc": {}}
 
-    result = {k: {} for k in ["vkospi", "usdkrw", "kospi_trprc"]}
     start_dt = (TODAY - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y%m%d")
     end_dt   = TODAY.strftime("%Y%m%d")
+    result   = {}
 
-    for idx_nm, key in KR_INDEX_MAP.items():
-        page, per_page = 1, 100
-        while True:
-            params = {
-                "serviceKey": DATA_GO_KR_KEY,
-                "pageNo":     page,
-                "numOfRows":  per_page,
-                "resultType": "json",
-                "idxNm":      idx_nm,
-                "beginBasDt": start_dt,
-                "endBasDt":   end_dt,
-            }
-            try:
-                r = requests.get(
-                    f"{MARKET_INDEX_BASE}/getStockMarketIndex",
-                    params=params, timeout=20
-                )
-                r.raise_for_status()
-                body  = r.json().get("response", {}).get("body", {})
-                items = body.get("items", {})
-                if not items:
-                    break
-                rows = items.get("item", [])
-                if isinstance(rows, dict):
-                    rows = [rows]
-                for row in rows:
-                    ds = str(row.get("basDt", "")).strip()
-                    if len(ds) != 8:
-                        continue
-                    try:
-                        d = dt.date(int(ds[:4]), int(ds[4:6]), int(ds[6:8]))
-                    except Exception:
-                        continue
-                    if key == "kospi_trprc":
-                        raw = str(row.get("trPrc", "")).replace(",", "").strip()
-                        if raw not in ("", "nan", "-"):
-                            try:
-                                result[key][d] = round(float(raw) / 1e12, 2)  # 원 → 조원
-                            except Exception:
-                                pass
-                    else:
-                        raw = str(row.get("clpr", "")).replace(",", "").strip()
-                        if raw not in ("", "nan", "-"):
-                            try:
-                                result[key][d] = float(raw)
-                            except Exception:
-                                pass
-                total = int(body.get("totalCount", 0))
-                if page * per_page >= total:
-                    break
-                page += 1
-            except Exception as e:
-                print(f"  [warn] fetch_kr_market_index {idx_nm} p{page}: {e}")
-                break
-
-        if result[key]:
-            latest = max(result[key])
-            print(f"  {idx_nm} ({key}): {len(result[key])}rows, latest {latest}: {result[key][latest]}")
+    for label, key, keywords, field, divisor in [
+        ("VKOSPI",       "vkospi",      VKOSPI_KEYWORDS, "clpr",  1),
+        ("원달러",        "usdkrw",      USDKRW_KEYWORDS, "clpr",  1),
+        ("코스피거래대금", "kospi_trprc", KOSPI_KEYWORDS,  "trPrc", 1e12),
+    ]:
+        data, matched = _kofia_index_fetch(keywords, start_dt, end_dt, val_field=field)
+        if divisor != 1:
+            data = {d: round(v / divisor, 2) for d, v in data.items()}
+        result[key] = data
+        if data:
+            latest = max(data)
+            print(f"  {label} ({matched}): {len(data)}rows, latest {latest}: {data[latest]}")
         else:
-            print(f"  [warn] {idx_nm}: 0 rows")
-
+            print(f"  [warn] {label}: 0 rows")
     return result
 
 
+def fetch_esg_index():
+    """ESG 지수 (KRX ESG Leaders 150 등) 종가 시계열."""
+    if not DATA_GO_KR_KEY:
+        return {}
+    result = {}
+    start_dt = (TODAY - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y%m%d")
+    end_dt   = TODAY.strftime("%Y%m%d")
+    page, per_page = 1, 100
+    target_name = None
+    while True:
+        params = {
+            "serviceKey": DATA_GO_KR_KEY,
+            "pageNo": page, "numOfRows": per_page,
+            "resultType": "json",
+            "beginBasDt": start_dt, "endBasDt": end_dt,
+        }
+        if target_name:
+            params["idxNm"] = target_name
+        try:
+            r = requests.get(f"{ESG_BASE}/getESGIdxInfo", params=params, timeout=20)
+            r.raise_for_status()
+            body  = r.json().get("response", {}).get("body", {})
+            items = body.get("items", {})
+            if not items:
+                break
+            rows = items.get("item", [])
+            if isinstance(rows, dict):
+                rows = [rows]
+            for row in rows:
+                nm = str(row.get("idxNm", ""))
+                if target_name is None:
+                    target_name = nm
+                elif nm != target_name:
+                    continue
+                ds  = str(row.get("basDt", "")).strip()
+                raw = str(row.get("clpr",  "")).replace(",","").strip()
+                if len(ds) == 8 and raw not in ("","nan","-"):
+                    try:
+                        d = dt.date(int(ds[:4]), int(ds[4:6]), int(ds[6:8]))
+                        result[d] = float(raw)
+                    except Exception:
+                        pass
+            total = int(body.get("totalCount", 0))
+            if page * per_page >= total:
+                break
+            page += 1
+        except Exception as e:
+            print(f"  [warn] fetch_esg_index p{page}: {e}")
+            break
+    if result:
+        latest = max(result)
+        print(f"  ESG지수 ({target_name}): {len(result)}rows, latest {latest}: {result[latest]}")
+    else:
+        print("  [warn] ESG지수: 0 rows")
+    return result
 
-# ================================================================
+
 # data.go.kr 금융투자협회 API - 신용공여잔고추이 (잘 됨)
 # ================================================================
 def fetch_credit_balance():
@@ -687,7 +744,7 @@ def fetch_foreign_holding_kr():
 MAIN_COLS = [
     "date",
     "kospi", "kosdaq", "samsung", "hynix",
-    "credit_balance_eok", "vkospi", "usdkrw", "kospi_trprc",
+    "credit_balance_eok", "vkospi", "usdkrw", "kospi_trprc", "esg_idx",
     "samsung_ret_pct", "hynix_ret_pct",
     "sp500", "nasdaq", "vix", "nvda", "ust10y", "cor1m",
     "sec_반도체", "sec_방산조선", "sec_바이오", "sec_2차전지", "sec_금융",
@@ -747,6 +804,7 @@ def update_data():
     # --- 한국 시장 펀더멘털 데이터 ---
     credit_map  = safe("credit",        fetch_credit_balance,   default={})
     kr_idx      = safe("kr_market_idx", fetch_kr_market_index,  default={"vkospi": {}, "usdkrw": {}, "kospi_trprc": {}})
+    esg_map     = safe("esg_idx",       fetch_esg_index,          default={})
 
     series_dict = {
         "kospi": kospi, "kosdaq": kosdaq, "samsung": samsung, "hynix": hynix,
@@ -762,6 +820,7 @@ def update_data():
     df["vkospi"]            = None
     df["usdkrw"]            = None
     df["kospi_trprc"]       = None
+    df["esg_idx"]           = None
 
     # 신용공여잔고
     for d, v in credit_map.items():
@@ -772,6 +831,9 @@ def update_data():
         for d, v in kr_idx.get(src, {}).items():
             if d in df["date"].values:
                 df.loc[df["date"] == d, col] = v
+    for d, v in esg_map.items():
+        if d in df["date"].values:
+            df.loc[df["date"] == d, "esg_idx"] = v
 
     for c in MAIN_COLS:
         if c not in df.columns:
@@ -1231,6 +1293,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
 
     kospi    = series_connected("kospi",      min_val=1000, max_daily_jump_pct=20)
     vkospi   = series_connected("vkospi",     min_val=3,    max_val=200, max_daily_jump_pct=80)
+    esg_idx  = series_connected("esg_idx",    min_val=1,    max_daily_jump_pct=20)
     usdkrw   = series_connected("usdkrw",     min_val=800,  max_val=2000, max_daily_jump_pct=10)
     kospi_trprc = series_nullable("kospi_trprc")
     kosdaq = series_connected("kosdaq", min_val=300, max_daily_jump_pct=20)
@@ -1249,6 +1312,10 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
         "samsung_base100": base100("samsung"),
         "hynix_base100": base100("hynix"),
         "credit": series_connected("credit_balance_eok", min_val=100000, max_daily_jump_pct=15),
+        "vkospi": vkospi,
+        "usdkrw": usdkrw,
+        "kospi_trprc": kospi_trprc,
+        "esg_idx": esg_idx,
         "sp500": sp500,
         "sp500_ma200": ma_series("sp500", 200),
         "nasdaq": nasdaq,
@@ -1432,6 +1499,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     <div class="chart"><div id="c_kr_usdkrw" style="height:280px;"></div></div>
   </div>
   <div class="chart"><div id="c_kr_trprc" style="height:260px;"></div></div>
+  <div class="chart"><div id="c_kr_esg" style="height:260px;"></div></div>
   <div class="chart"><div id="c_kr_semi" style="height:280px;"></div></div>
   <div class="chart"><div id="c_kr_sector" style="height:320px;"></div></div>
 </div>
@@ -1557,6 +1625,9 @@ safePlot('c_kr_usdkrw', [
   }} catch(e) {{ console.error('trprc:', e); showEmpty(id); }}
 }})();
 
+safePlot('c_kr_esg', [
+  {{x: D.dates, y: D.esg_idx, type: 'scatter', mode: 'lines', name: 'ESG지수', connectgaps: true, line: {{color: '#1D9E75', width: 2.2}}}}
+], 'KRX ESG 지수', {{yaxis: {{title: '지수'}}}});
 safePlot('c_kr_semi', [
   {{x: D.dates, y: D.kospi_base100, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#888', width: 1.2, dash: 'dot'}}}},
   {{x: D.dates, y: D.samsung_base100, type: 'scatter', mode: 'lines', name: '삼성전자', connectgaps: true, line: {{color: '#185FA5', width: 2.2}}}},
