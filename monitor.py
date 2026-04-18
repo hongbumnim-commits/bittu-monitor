@@ -688,8 +688,8 @@ def update_data():
     }
     df = pd.DataFrame(series_dict)
     df = df.reset_index().rename(columns={"index": "date"})
-    df["samsung_ret_pct"] = df["samsung"].pct_change() * 100
-    df["hynix_ret_pct"] = df["hynix"].pct_change() * 100
+    df["samsung_ret_pct"] = df["samsung"].pct_change(fill_method=None) * 100
+    df["hynix_ret_pct"] = df["hynix"].pct_change(fill_method=None) * 100
     df["credit_balance_eok"] = None
     df["forced_sale_eok"] = None
 
@@ -796,16 +796,6 @@ def compute_signals(df, extras=None):
         "level": lvl,
         "description": f"최근 5일 동시 -3%: {both}회"
     }
-
-    kr["KR4"] = {"name": "외국인 7일 누적 순매도", "level": 0, "description": "데이터 부족"}
-    if len(foreign_ser) >= 7:
-        sum7 = float(foreign_ser.tail(7).sum())
-        outflow = -sum7 / 10000
-        kr["KR4"] = {
-            "name": "외국인 7일 누적 순매도",
-            "level": level_from_gap(outflow, [1.0, 3.0, 5.0]),
-            "description": f"최근 7영업일 합계 {sum7/10000:+.2f}조"
-        }
 
     dev_kospi = pct_deviation_from_ma(df["kospi"], 200)
     kr["KR5"] = {"name": "코스피-200일선 괴리", "level": 0, "description": "데이터 부족"}
