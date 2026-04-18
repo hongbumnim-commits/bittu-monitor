@@ -1083,6 +1083,7 @@ def render_dashboard(df, signals, regime_kr, regime_us):
         "kosdaq": col_connected("kosdaq", min_val=300, max_daily_jump_pct=20),
         # 반도체 양대장 — 누적 수익률 (Base 100)
         "kospi_base100": cum_base100("kospi"),
+        "kosdaq_base100": cum_base100("kosdaq"),
         "samsung_base100": cum_base100("samsung"),
         "hynix_base100": cum_base100("hynix"),
         "samsung_ret": col_raw("samsung_ret_pct"), "hynix_ret": col_raw("hynix_ret_pct"),
@@ -1198,12 +1199,14 @@ def render_dashboard(df, signals, regime_kr, regime_us):
 
   <div class="section-title">차트</div>
   <div class="chart-grid">
-    <div class="chart"><div id="c_kr_idx" style="height:300px;"></div></div>
-    <div class="chart"><div id="c_kr_vkospi" style="height:300px;"></div></div>
+    <div class="chart"><div id="c_kr_rel" style="height:320px;"></div></div>
+    <div class="chart"><div id="c_kr_abs" style="height:320px;"></div></div>
   </div>
+  <div class="chart-grid">
+    <div class="chart"><div id="c_kr_vkospi" style="height:300px;"></div></div>
+    </div>
   <div class="chart"><div id="c_kr_credit" style="height:300px;"></div></div>
   <div class="chart"><div id="c_kr_forced" style="height:280px;"></div></div>
-  <div class="chart"><div id="c_kr_foreign" style="height:300px;"></div></div>
   <div class="chart"><div id="c_kr_semi" style="height:280px;"></div></div>
   <div class="chart"><div id="c_kr_sector" style="height:320px;"></div></div>
 </div>
@@ -1251,23 +1254,29 @@ const base = {{
 }};
 
 const smoothLine = (color, width=2) => ({{color, width, shape: 'spline', smoothing: 0.35}});
-
+function hasData(arr) {{ return Array.isArray(arr) && arr.some(v => v !== null && v !== undefined && !Number.isNaN(v)); }}
+function emptyChart(id, message) {{
+  document.getElementById(id).innerHTML = `<div style="height:100%;display:flex;align-items:center;justify-content:center;color:#888;font-size:14px;">${{message}}</div>`;
+}}
 function plot(id, traces, title, extra) {{
-  if (!D.dates.length) {{
-    document.getElementById(id).innerHTML = '<p style="text-align:center;color:#888;padding:40px;">데이터 대기</p>';
-    return;
-  }}
-  Plotly.newPlot(id, traces, {{...base, title: {{text: title, font: {{size: 13}}}}, ...(extra || {{}})}});
+  if (!D.dates.length) {{ emptyChart(id, '데이터 대기'); return; }}
+  const hasAny = traces.some(t => hasData(t.y || []));
+  if (!hasAny) {{ emptyChart(id, '데이터 수집 실패 또는 데이터 없음'); return; }}
+  Plotly.newPlot(id, traces, {{...base, title: {{text: title, font: {{size: 13}}}}, ...(extra || {{}})}}, {{displayModeBar: false, responsive: true}});
 }}
 
-plot('c_kr_idx', [
+plot('c_kr_rel', [
+  {{x: D.dates, y: D.kospi_base100, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: smoothLine('#185FA5', 2.8)}},
+  {{x: D.dates, y: D.kosdaq_base100, type: 'scatter', mode: 'lines', name: '코스닥', connectgaps: true, line: smoothLine('#534AB7', 2.8)}}
+], '코스피 vs 코스닥 상대 추세 (Base 100)', {{yaxis: {{title: 'Base 100'}}}});
+
+plot('c_kr_abs', [
   {{x: D.dates, y: D.kospi, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: smoothLine('#185FA5', 2.6)}},
-  {{x: D.dates, y: D.kospi_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {{color: '#A32D2D', width: 1.5, dash: 'dash'}}}},
-  {{x: D.dates, y: D.kosdaq, type: 'scatter', mode: 'lines', name: '코스닥', yaxis: 'y2', connectgaps: true, line: smoothLine('#534AB7', 2.2)}}
-], '코스피 + 200일선 & 코스닥', {{yaxis: {{title: '코스피'}}, yaxis2: {{title: '코스닥', overlaying: 'y', side: 'right'}}}});
+  {{x: D.dates, y: D.kospi_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {{color: '#A32D2D', width: 1.5, dash: 'dash'}}}}
+], '코스피 절대 추세', {{yaxis: {{title: '코스피'}}, xaxis: {{showgrid: true}}}});
 
 plot('c_kr_vkospi', [
-  {{x: D.dates, y: D.vkospi, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VKOSPI', connectgaps: true,
+  {{x: D.dates, y: D.vkospi, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VKOSPI', connectgaps: false,
     line: smoothLine('#A32D2D', 2.4), fillcolor: 'rgba(163,45,45,0.1)'}}
 ] , 'VKOSPI 공포지수', {{
   yaxis: {{title: 'VKOSPI', range: [0, 40]}},
@@ -1289,8 +1298,8 @@ plot('c_kr_forced', [{{
 
 plot('c_kr_foreign', [{{
   x: D.dates, y: D.foreign, type: 'bar', name: '외국인(억)',
-  marker: {{color: D.foreign.map(v => v == null ? 'rgba(0,0,0,0)' : (v < 0 ? '#A32D2D' : '#1D9E75'))}}
-}}], '외국인 일별 순매수/매도 (코스피+코스닥)');
+  marker: {{color: D.foreign.map(v => v == null ? '#d9d9d9' : (v < 0 ? '#A32D2D' : '#1D9E75'))}}
+}}], '외국인 일별 순매수/매도 (코스피+코스닥)', {{yaxis: {{title: '억원'}}}});
 
 plot('c_kr_semi', [
   {{x: D.dates, y: D.kospi_base100, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#888', width: 1.2, dash: 'dot'}}}},
@@ -1332,7 +1341,7 @@ plot('c_us_rate', [
 ], '미국 10년물 국채금리 (%)');
 
 plot('c_us_cor1m', [
-  {{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'COR1M', connectgaps: true,
+  {{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'COR1M', connectgaps: false,
     line: smoothLine('#534AB7', 3), fillcolor: 'rgba(83,74,183,0.08)'}}
 ], 'CBOE 1개월 내재상관 (COR1M) — 낮을수록 쏠림, 높을수록 시스템 공포', {{
   yaxis: {{title: 'COR1M', range: [0, 100]}},
