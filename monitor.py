@@ -25,6 +25,8 @@ import FinanceDataReader as fdr
 ROOT = Path(__file__).parent
 DATA_DIR = ROOT / "data"
 DOCS_DIR = ROOT / "docs"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+DOCS_DIR.mkdir(parents=True, exist_ok=True)
 
 KST = dt.timezone(dt.timedelta(hours=9))
 TODAY = dt.datetime.now(KST).date()
@@ -37,122 +39,6 @@ SECTOR_BASKETS = {
     "2차전지":  ["373220", "006400", "051910", "096770"],
     "금융":     ["105560", "055550", "086790", "316140"],
 }
-
-
-M7_PLUS_STOCKS = {
-    "SP500": "S&P500",
-    "IXIC": "나스닥",
-    "AAPL": "애플",
-    "MSFT": "마이크로소프트",
-    "GOOGL": "구글",
-    "AMZN": "아마존",
-    "META": "메타",
-    "NVDA": "엔비디아",
-    "TSLA": "테슬라",
-    "AVGO": "브로드컴",
-    "TSM": "TSMC",
-}
-
-GLOBAL_LIQUIDITY_SERIES = {
-    "WALCL": "fed_assets",
-    "ECBASSETSW": "ecb_assets",
-    "JPNASSETS": "boj_assets",
-}
-
-
-def fetch_stooq_series(symbol, name=None, days=LOOKBACK_DAYS):
-    """Stooq CSV fallback. 예: usdjpy -> USD/JPY"""
-    from io import StringIO
-    urls = [
-        f"https://stooq.com/q/d/l/?s={symbol}&i=d",
-        f"https://stooq.com/q/d/l/?s={symbol}&d1={(TODAY - dt.timedelta(days=days)).strftime('%Y%m%d')}&d2={TODAY.strftime('%Y%m%d')}&i=d",
-    ]
-    headers = {"User-Agent": "Mozilla/5.0", "Accept-Language": "en-US,en;q=0.9"}
-    for url in urls:
-        try:
-            r = requests.get(url, headers=headers, timeout=20)
-            if r.status_code != 200 or len(r.text) < 20:
-                continue
-            df = pd.read_csv(StringIO(r.text))
-            if df.empty or "Date" not in df.columns or "Close" not in df.columns:
-                continue
-            df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-            df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
-            df = df.dropna(subset=["Date", "Close"])
-            if df.empty:
-                continue
-            cutoff = TODAY - dt.timedelta(days=days)
-            df = df[df["Date"].dt.date >= cutoff]
-            if df.empty:
-                continue
-            s = pd.Series(df["Close"].values, index=df["Date"].dt.date, name=name or symbol)
-            print(f"  {name or symbol} via stooq: {len(s)} rows, latest {float(s.iloc[-1]):.2f}")
-            return s
-        except Exception as e:
-            print(f"  [warn] stooq {symbol}: {e}")
-    return pd.Series(dtype=float, name=name or symbol)
-
-
-def fetch_fred_series(series_id, name=None, days=LOOKBACK_DAYS * 3):
-    start = (TODAY - dt.timedelta(days=days)).strftime("%Y-%m-%d")
-    try:
-        df = fdr.DataReader(f"FRED:{series_id}", start)
-        if df is None or df.empty:
-            return pd.Series(dtype=float, name=name or series_id)
-        col = df.columns[0]
-        s = pd.to_numeric(df[col], errors="coerce").dropna()
-        if s.empty:
-            return pd.Series(dtype=float, name=name or series_id)
-        s.index = pd.to_datetime(s.index).date
-        return s.rename(name or series_id)
-    except Exception as e:
-        print(f"  [warn] fred {series_id}: {e}")
-        return pd.Series(dtype=float, name=name or series_id)
-
-
-def fetch_m7_plus_basket():
-    result = {}
-    for ticker in M7_PLUS_STOCKS.keys():
-        source_symbol = "US500" if ticker == "SP500" else ticker
-        if ticker == "IXIC":
-            source_symbol = "IXIC"
-        s = safe(f"m7_{ticker}", lambda ts=source_symbol, nm=ticker: fetch_fdr(ts, nm, days=LOOKBACK_DAYS), default=pd.Series(dtype=float))
-        if not s.empty:
-            result[ticker] = s.rename(ticker)
-    print(f"  m7+ basket: {len(result)} tickers")
-    return result
-
-
-def fetch_global_liquidity_proxy():
-    """A안: 주요 중앙은행 자산 합계(정규화 proxy) + USDJPY(Stooq 우선)."""
-    series = {}
-    for sid, nm in GLOBAL_LIQUIDITY_SERIES.items():
-        s = fetch_fred_series(sid, nm)
-        if not s.empty:
-            series[nm] = s
-    proxy = pd.Series(dtype=float, name="global_liquidity")
-    if series:
-        df = pd.concat(series.values(), axis=1).sort_index().ffill().dropna(how="all")
-        if not df.empty:
-            normalized = []
-            for c in df.columns:
-                col = pd.to_numeric(df[c], errors="coerce").dropna()
-                if col.empty or col.iloc[0] == 0:
-                    continue
-                normalized.append(col / col.iloc[0] * 100)
-            if normalized:
-                proxy = pd.concat(normalized, axis=1).mean(axis=1).rename("global_liquidity")
-    usdjpy = fetch_stooq_series("usdjpy", "usdjpy", days=LOOKBACK_DAYS * 3)
-    if usdjpy.empty:
-        for sym in ["USDJPY", "JPY=X"]:
-            try:
-                s = fetch_fdr(sym, "usdjpy", days=LOOKBACK_DAYS * 3)
-                if not s.empty:
-                    usdjpy = s.rename("usdjpy")
-                    break
-            except Exception:
-                pass
-    return {"global_liquidity": proxy, "usdjpy": usdjpy}
 
 
 def safe(fn_name, fn, default=None, retries=3, sleep=2):
@@ -193,10 +79,84 @@ def fetch_cor1m():
     CBOE 1-Month Implied Correlation Index (^COR1M).
     S&P 500 구성종목 간 내재상관 — '모두 같이 움직일 확률'을 옵션으로 측정.
     높음(60+) = 시스템 공포, 낮음(<20) = 쏠림 극한 (역설적 위험).
+
+    소스 우선순위:
+      1) CBOE 공식 CDN CSV (cdn.cboe.com, VIX_History와 같은 패턴) — 가장 안정적
+      2) FDR의 ^COR1M
+      3) Yahoo chart API (여러 user-agent, 세션 쿠키 시도)
+      4) Investing.com historical
     """
     import urllib.parse
+    from io import StringIO
 
-    # 1) FDR로 Yahoo ^COR1M 시도
+    # 1) CBOE 공식 CDN — 가장 안정적. GitHub IP도 막지 않음.
+    cboe_urls = [
+        "https://cdn.cboe.com/api/global/us_indices/daily_prices/COR1M_History.csv",
+        "https://cdn.cboe.com/api/global/us_indices/daily_prices/COR1M_Historical_Data.csv",
+    ]
+    for url in cboe_urls:
+        try:
+            r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+            if r.status_code != 200 or len(r.text) < 50:
+                continue
+            # CSV 구조: 보통 "DATE,OPEN,HIGH,LOW,CLOSE" 또는 "Date,Close"
+            content = r.text
+            # 헤더에 Cboe 경고문구 등이 섞여있을 수 있음 → 실제 헤더 줄 찾기
+            lines = content.splitlines()
+            header_idx = None
+            for i, line in enumerate(lines[:10]):
+                if re.search(r"date", line, re.IGNORECASE):
+                    header_idx = i
+                    break
+            if header_idx is None:
+                continue
+            clean_csv = "\n".join(lines[header_idx:])
+            df_cboe = pd.read_csv(StringIO(clean_csv))
+            # 날짜 컬럼 찾기
+            date_col = None
+            for c in df_cboe.columns:
+                if re.search(r"date", str(c), re.IGNORECASE):
+                    date_col = c
+                    break
+            if date_col is None:
+                continue
+            # 종가 컬럼 찾기
+            close_col = None
+            for c in df_cboe.columns:
+                cl = str(c).lower()
+                if "close" in cl or cl == "value":
+                    close_col = c
+                    break
+            if close_col is None:
+                # 컬럼이 Date와 하나만 있으면 그게 종가
+                other_cols = [c for c in df_cboe.columns if c != date_col]
+                if len(other_cols) >= 1:
+                    close_col = other_cols[-1]  # 마지막 컬럼이 보통 종가
+            if close_col is None:
+                continue
+            df_cboe[date_col] = pd.to_datetime(df_cboe[date_col], errors="coerce")
+            df_cboe = df_cboe.dropna(subset=[date_col])
+            df_cboe["_close"] = pd.to_numeric(df_cboe[close_col], errors="coerce")
+            df_cboe = df_cboe.dropna(subset=["_close"])
+            if df_cboe.empty:
+                continue
+            cutoff = TODAY - dt.timedelta(days=LOOKBACK_DAYS)
+            df_cboe = df_cboe[df_cboe[date_col].dt.date >= cutoff]
+            if df_cboe.empty:
+                continue
+            s = pd.Series(
+                df_cboe["_close"].values,
+                index=df_cboe[date_col].dt.date.values,
+                name="cor1m",
+            )
+            last = float(s.iloc[-1])
+            if 1 < last < 100:
+                print(f"  cor1m via cboe-cdn ({url.split('/')[-1]}): {len(s)} rows, latest {last:.2f}")
+                return s
+        except Exception as e:
+            print(f"  [info] cboe cdn {url.split('/')[-1]}: {e}")
+
+    # 2) FDR로 Yahoo ^COR1M 시도
     try:
         df = fdr.DataReader("^COR1M")
         if df is not None and not df.empty:
@@ -213,39 +173,100 @@ def fetch_cor1m():
     except Exception as e:
         print(f"  [info] fdr cor1m failed: {e}")
 
-    # 2) Yahoo chart API 직접 호출 (강화된 헤더)
+    # 3) Yahoo chart API — 세션 쿠키 + 다양한 user-agent 시도
     end_ts = int(dt.datetime.now(KST).timestamp())
     start_ts = end_ts - LOOKBACK_DAYS * 86400
-    symbol = urllib.parse.quote("^COR1M")
-    url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-           f"?period1={start_ts}&period2={end_ts}&interval=1d")
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://finance.yahoo.com/quote/%5ECOR1M/",
-        "Origin": "https://finance.yahoo.com",
-    }
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+    ]
+    symbol_enc = urllib.parse.quote("^COR1M")
+    for ua in user_agents:
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": ua,
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://finance.yahoo.com/quote/%5ECOR1M/",
+        })
+        try:
+            session.get("https://finance.yahoo.com/", timeout=10)
+        except Exception:
+            pass
+        for url_base in [
+            f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol_enc}",
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol_enc}",
+        ]:
+            try:
+                r = session.get(url_base, params={"period1": start_ts, "period2": end_ts, "interval": "1d"}, timeout=15)
+                if r.status_code != 200:
+                    continue
+                data = r.json()
+                result = data["chart"]["result"][0]
+                timestamps = result.get("timestamp", [])
+                closes = result["indicators"]["quote"][0].get("close", [])
+                if not timestamps or not closes:
+                    continue
+                dates = [dt.datetime.fromtimestamp(t, tz=dt.timezone.utc).date() for t in timestamps]
+                s = pd.Series(closes, index=dates, name="cor1m").dropna()
+                if s.empty:
+                    continue
+                last = float(s.iloc[-1])
+                if 1 < last < 100:
+                    print(f"  cor1m via yahoo: {len(s)} rows, latest {last:.2f}")
+                    return s
+            except Exception:
+                continue
+
+    # 4) Investing.com 폴백
     try:
-        r = requests.get(url, headers=headers, timeout=20)
-        r.raise_for_status()
-        data = r.json()
-        result = data["chart"]["result"][0]
-        timestamps = result["timestamp"]
-        closes = result["indicators"]["quote"][0]["close"]
-        dates = [dt.datetime.fromtimestamp(t, tz=dt.timezone.utc).date() for t in timestamps]
-        s = pd.Series(closes, index=dates, name="cor1m").dropna()
+        s = fetch_investing_history("https://www.investing.com/indices/cboe-1month-implied-correlation-historical-data", "cor1m")
         if not s.empty:
-            last = float(s.iloc[-1])
-            print(f"  cor1m via yahoo: {len(s)} rows, latest {last:.2f}")
             return s
     except Exception as e:
-        print(f"  [warn] yahoo cor1m: {e}")
+        print(f"  [info] investing cor1m: {e}")
 
     print(f"  [warn] cor1m: all sources failed")
     return pd.Series(dtype=float, name="cor1m")
 
+
+
+def fetch_investing_history(url, name, days=LOOKBACK_DAYS):
+    """Investing.com historical page fallback scraper."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.investing.com/",
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=20)
+        r.raise_for_status()
+        tables = pd.read_html(r.text)
+        cutoff = TODAY - dt.timedelta(days=days)
+        for t in tables:
+            cols = [str(c) for c in t.columns]
+            flat_cols = " ".join(cols).lower()
+            if "date" not in flat_cols or "price" not in flat_cols:
+                continue
+            date_col = next((c for c in t.columns if str(c).lower().startswith("date")), t.columns[0])
+            price_col = next((c for c in t.columns if "price" in str(c).lower()), None)
+            if price_col is None:
+                continue
+            tmp = t[[date_col, price_col]].copy()
+            tmp.columns = ["date", "price"]
+            tmp["date"] = pd.to_datetime(tmp["date"], errors="coerce")
+            tmp["price"] = pd.to_numeric(tmp["price"].astype(str).str.replace(",", "", regex=False), errors="coerce")
+            tmp = tmp.dropna().sort_values("date")
+            if tmp.empty:
+                continue
+            s = pd.Series(tmp["price"].values, index=tmp["date"].dt.date, name=name)
+            s = s[s.index >= cutoff]
+            if not s.empty:
+                print(f"  {name} via investing: {len(s)} rows, latest {float(s.iloc[-1]):.2f}")
+                return s
+    except Exception as e:
+        print(f"  [warn] investing {name}: {e}")
+    return pd.Series(dtype=float, name=name)
 
 def fetch_naver_deposit():
     url = "https://finance.naver.com/sise/sise_deposit.naver"
@@ -309,46 +330,120 @@ def fetch_naver_deposit():
 
 
 def fetch_naver_foreign_flow():
-    """[DEPRECATED] 네이버 투자자 매매동향 스크래핑 — fallback용으로 유지. 최신 경로는 fetch_krx_foreign_flow()."""
-    url = "https://finance.naver.com/sise/investorDealTrendDay.naver"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    r = requests.get(url, headers=headers, timeout=15)
-    r.encoding = "euc-kr"
+    """네이버 투자자 매매동향 스크래핑. 여러 엔드포인트 & UA 시도."""
+    urls = [
+        "https://finance.naver.com/sise/investorDealTrendDay.naver",
+        "https://m.stock.naver.com/investment/trend/invertor",  # 모바일 페이지 (다른 경로 시도용)
+    ]
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+    ]
+    result = {}
+    for url in urls:
+        if result:
+            break
+        for ua in user_agents:
+            try:
+                r = requests.get(url, headers={"User-Agent": ua, "Referer": "https://finance.naver.com/"}, timeout=15)
+                if r.status_code != 200:
+                    continue
+                r.encoding = "euc-kr" if ".naver.com" in url else "utf-8"
+                try:
+                    tables = pd.read_html(r.text)
+                except Exception:
+                    continue
+                for t in tables:
+                    cols = [str(c) for c in t.columns]
+                    flat = " ".join(cols) + " " + " ".join([str(x) for x in t.values.flatten().tolist()[:50]])
+                    if "외국인" in flat and ("날짜" in flat or "일자" in flat):
+                        for row in t.itertuples(index=False):
+                            row_vals = [str(v) for v in row]
+                            date_match = None
+                            for v in row_vals:
+                                m = re.search(r"(\d{2,4})[./-](\d{1,2})[./-](\d{1,2})", v)
+                                if m:
+                                    y, mo, d = m.groups()
+                                    if len(y) == 2:
+                                        y = "20" + y
+                                    try:
+                                        date_match = dt.date(int(y), int(mo), int(d))
+                                        break
+                                    except Exception:
+                                        continue
+                            if not date_match:
+                                continue
+                            numeric_vals = []
+                            for v in row_vals:
+                                v_clean = v.replace(",", "").replace("+", "").strip()
+                                if re.match(r"^-?\d+$", v_clean):
+                                    numeric_vals.append(int(v_clean))
+                            if len(numeric_vals) >= 3:
+                                foreign_val = numeric_vals[1]
+                                result[date_match] = foreign_val
+                if result:
+                    break
+            except Exception as e:
+                print(f"  [warn] naver foreign {url[:40]}: {e}")
+                continue
+    print(f"  foreign flow (naver): {len(result)} days")
+    return result
+
+
+def fetch_hankyung_foreign_flow():
+    """한경 외국인 매매 스크래핑 — 네이버 실패 시 폴백."""
+    url = "https://markets.hankyung.com/investment/foreigner-trading"
     result = {}
     try:
-        tables = pd.read_html(r.text, encoding="euc-kr")
+        r = requests.get(url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/121.0.0.0 Safari/537.36",
+            "Accept-Language": "ko-KR,ko;q=0.9",
+        }, timeout=15)
+        if r.status_code != 200:
+            return result
+        try:
+            tables = pd.read_html(r.text)
+        except Exception:
+            return result
         for t in tables:
-            cols = [str(c) for c in t.columns]
-            flat = " ".join(cols) + " " + " ".join([str(x) for x in t.values.flatten().tolist()[:50]])
-            if "외국인" in flat and ("날짜" in flat or "일자" in flat):
+            flat = " ".join([str(c) for c in t.columns])
+            if "외국인" in flat or ("일자" in flat and "순매수" in flat):
                 for row in t.itertuples(index=False):
                     row_vals = [str(v) for v in row]
                     date_match = None
                     for v in row_vals:
-                        m = re.search(r"(\d{2,4})[./-](\d{1,2})[./-](\d{1,2})", v)
+                        m = re.search(r"(\d{4})[./-](\d{1,2})[./-](\d{1,2})", v)
                         if m:
-                            y, mo, d = m.groups()
-                            if len(y) == 2:
-                                y = "20" + y
                             try:
-                                date_match = dt.date(int(y), int(mo), int(d))
+                                date_match = dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
                                 break
                             except Exception:
                                 continue
                     if not date_match:
                         continue
-                    numeric_vals = []
+                    nums = []
                     for v in row_vals:
-                        v_clean = v.replace(",", "").replace("+", "").strip()
-                        if re.match(r"^-?\d+$", v_clean):
-                            numeric_vals.append(int(v_clean))
-                    if len(numeric_vals) >= 3:
-                        foreign_val = numeric_vals[1] if len(numeric_vals) >= 3 else numeric_vals[0]
-                        result[date_match] = foreign_val
+                        vc = v.replace(",", "").replace("+", "").strip()
+                        if re.match(r"^-?\d+$", vc):
+                            nums.append(int(vc))
+                    if nums:
+                        result[date_match] = nums[0]
     except Exception as e:
-        print(f"  [warn] foreign flow (naver): {e}")
-    print(f"  foreign flow (naver): {len(result)} days")
+        print(f"  [warn] hankyung foreign: {e}")
+    print(f"  foreign flow (hankyung): {len(result)} days")
     return result
+
+
+def fetch_foreign_flow_combined():
+    """여러 소스 순차 시도."""
+    result = fetch_naver_foreign_flow()
+    if result:
+        return result
+    result = fetch_hankyung_foreign_flow()
+    if result:
+        return result
+    print(f"  [warn] foreign flow: all sources failed")
+    return {}
 
 
 def fetch_krx_foreign_flow(days=LOOKBACK_DAYS):
@@ -431,6 +526,12 @@ def fetch_fdr_vkospi():
                 print(f"  [warn] yahoo {symbol} out of range ({last:.2f})")
         except Exception as e:
             print(f"  [warn] yahoo vkospi {symbol}: {e}")
+
+    s = fetch_investing_history("https://www.investing.com/indices/kospi-volatility-historical-data", "vkospi")
+    if not s.empty:
+        last = float(s.iloc[-1])
+        if 5 <= last <= 100:
+            return s
 
     print(f"  [warn] vkospi: all sources failed")
     return pd.Series(dtype=float, name="vkospi")
@@ -616,6 +717,207 @@ def fetch_sector_basket(tickers):
     return normalized.mean(axis=1)
 
 
+# ================================================================
+# 미국 신용잔고 — FINRA Margin Statistics (월별)
+# ================================================================
+# FINRA Rule 4521에 따라 증권사들이 매월 말일 기준으로 보고
+# 공식 URL: finra.org의 margin-statistics.xlsx (매달 갱신)
+
+FINRA_MARGIN_URLS = [
+    "https://www.finra.org/sites/default/files/2021-03/margin-statistics.xlsx",
+    "https://www.finra.org/sites/default/files/margin-statistics.xlsx",
+]
+
+
+def fetch_us_margin_debt():
+    """
+    FINRA 증권사 신용잔고 (Margin Debt) — 월별 데이터.
+    단위: 백만달러 (원본) → 십억달러로 변환
+    Returns:
+        dict {date(월말): debt_bil_usd}
+    """
+    from io import BytesIO
+    for url in FINRA_MARGIN_URLS:
+        try:
+            r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
+            if r.status_code != 200:
+                continue
+            try:
+                xl = pd.read_excel(BytesIO(r.content), sheet_name=None, engine="openpyxl")
+            except Exception as e:
+                print(f"  [warn] finra xlsx read: {e}")
+                continue
+            if not xl:
+                continue
+            sheet_name = list(xl.keys())[0]
+            df_raw = xl[sheet_name]
+            if df_raw.empty or len(df_raw) < 5:
+                continue
+            # 헤더 행 찾기
+            header_row = None
+            for i in range(min(15, len(df_raw))):
+                row_str = " ".join([str(v) for v in df_raw.iloc[i].values if pd.notna(v)]).lower()
+                if ("debit" in row_str and "margin" in row_str) or ("year-month" in row_str) or ("year/month" in row_str):
+                    header_row = i
+                    break
+            if header_row is None:
+                for i in range(min(15, len(df_raw))):
+                    try:
+                        v = df_raw.iloc[i, 1]
+                        if pd.notna(v) and isinstance(v, (int, float)) and v > 10000:
+                            header_row = i - 1
+                            break
+                    except Exception:
+                        continue
+            if header_row is None:
+                continue
+            new_cols = df_raw.iloc[header_row].tolist()
+            df_data = df_raw.iloc[header_row + 1:].copy()
+            df_data.columns = [str(c).strip() if pd.notna(c) else f"col_{i}" for i, c in enumerate(new_cols)]
+            df_data = df_data.reset_index(drop=True)
+            date_col = df_data.columns[0]
+            debit_col = None
+            for c in df_data.columns:
+                cl = str(c).lower()
+                if "debit" in cl and "margin" in cl:
+                    debit_col = c
+                    break
+            if debit_col is None and len(df_data.columns) >= 2:
+                debit_col = df_data.columns[1]
+            if debit_col is None:
+                continue
+            result = {}
+            for _, row in df_data.iterrows():
+                date_val = row[date_col]
+                debit_val = row[debit_col]
+                if pd.isna(date_val) or pd.isna(debit_val):
+                    continue
+                parsed_date = None
+                if isinstance(date_val, (pd.Timestamp, dt.datetime, dt.date)):
+                    parsed_date = date_val.date() if hasattr(date_val, "date") else date_val
+                else:
+                    date_str = str(date_val).strip()
+                    for fmt in ["%b-%y", "%B-%y", "%b %Y", "%B %Y", "%Y-%m", "%Y/%m", "%m/%Y"]:
+                        try:
+                            parsed_date = dt.datetime.strptime(date_str, fmt).date()
+                            break
+                        except ValueError:
+                            continue
+                if parsed_date is None:
+                    continue
+                try:
+                    debit_num = float(str(debit_val).replace(",", ""))
+                except (ValueError, TypeError):
+                    continue
+                # 백만 USD → 십억 USD
+                result[parsed_date] = round(debit_num / 1000, 1)
+            if result:
+                cutoff = TODAY - dt.timedelta(days=36 * 31)
+                result = {d: v for d, v in result.items() if d >= cutoff}
+                print(f"  us margin debt (finra): {len(result)} months, latest ${max(result.values()):.1f}B")
+                return result
+        except Exception as e:
+            print(f"  [warn] finra {url.split('/')[-1]}: {e}")
+    print(f"  [warn] us margin debt: all sources failed")
+    return {}
+
+
+# ================================================================
+# M7 + AVGO + TSM 바스켓 (개별 종목 누적 추세)
+# ================================================================
+
+M7_PLUS_STOCKS = {
+    "AAPL":  "애플",
+    "MSFT":  "마이크로소프트",
+    "GOOGL": "구글",
+    "AMZN":  "아마존",
+    "META":  "메타",
+    "NVDA":  "엔비디아",
+    "TSLA":  "테슬라",
+    "AVGO":  "브로드컴",
+    "TSM":   "TSMC",
+}
+
+
+def fetch_m7_plus_basket():
+    """M7 + AVGO + TSM 개별 종목 + S&P500. dict {ticker: Series} 반환."""
+    result = {}
+    sp500 = safe("sp500_basket", lambda: fetch_fdr("US500", "sp500"), default=pd.Series(dtype=float))
+    if not sp500.empty:
+        result["SP500"] = sp500
+    for ticker in M7_PLUS_STOCKS.keys():
+        s = safe(f"m7_{ticker}", lambda t=ticker: fetch_fdr(t, name=t, days=LOOKBACK_DAYS),
+                 default=pd.Series(dtype=float))
+        if not s.empty:
+            result[ticker] = s
+    print(f"  m7+ basket: {len(result)}/{len(M7_PLUS_STOCKS) + 1} tickers")
+    return result
+
+
+# ================================================================
+# 한국 외국인 주식 보유금액 & 비중 — index.go.kr (월별)
+# ================================================================
+
+def fetch_foreign_holding_kr():
+    """
+    index.go.kr(지표나라) 외국인 증권투자 현황 HTML 파싱.
+    Returns: dict {date: {'amount_trillion': float, 'pct': float}}
+    """
+    url = "https://www.index.go.kr/unity/potal/main/EachDtlPageDetail.do?idx_cd=1086"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Accept-Language": "ko-KR,ko;q=0.9",
+    }
+    result = {}
+    try:
+        r = requests.get(url, headers=headers, timeout=20)
+        if r.status_code != 200:
+            return result
+        text = r.text
+        # "('YY.MM월말) XXX.X조원" — 다양한 따옴표 허용
+        amount_pattern = re.compile(r"[\(\[][^)\]]*?(\d{2})\.(\d{1,2})월말[^)\]]*?[\)\]]\s*([\d,]+\.?\d*)\s*조원")
+        for m in amount_pattern.finditer(text):
+            try:
+                y = 2000 + int(m.group(1))
+                mo = int(m.group(2))
+                amount = float(m.group(3).replace(",", ""))
+                if 1 <= mo <= 12 and 100 <= amount <= 2000:
+                    d = dt.date(y, mo, 1)
+                    if d not in result:
+                        result[d] = {"amount_trillion": amount, "pct": None}
+                    else:
+                        result[d]["amount_trillion"] = amount
+            except (ValueError, TypeError):
+                continue
+        # 비중 패턴 — "('YY.MM월) XX.X"
+        pct_pattern = re.compile(r"[\(\[][^)\]]*?(\d{2})\.(\d{1,2})월[^)\]]*?[\)\]]\s*(\d{2}\.\d)(?:\s|$|→|,)")
+        for m in pct_pattern.finditer(text):
+            try:
+                y = 2000 + int(m.group(1))
+                mo = int(m.group(2))
+                pct = float(m.group(3))
+                if 1 <= mo <= 12 and 15 <= pct <= 50:
+                    d = dt.date(y, mo, 1)
+                    if d not in result:
+                        result[d] = {"amount_trillion": None, "pct": pct}
+                    else:
+                        if result[d].get("pct") is None:
+                            result[d]["pct"] = pct
+            except (ValueError, TypeError):
+                continue
+        cutoff = TODAY - dt.timedelta(days=36 * 31)
+        result = {d: v for d, v in result.items() if d >= cutoff}
+        if result:
+            latest = max(result.keys())
+            lv = result[latest]
+            amt_str = f"{lv['amount_trillion']:.0f}조" if lv.get('amount_trillion') else "-"
+            pct_str = f"{lv['pct']:.1f}%" if lv.get('pct') else "-"
+            print(f"  foreign holding kr (index.go.kr): {len(result)} months, latest {latest}: {amt_str} / {pct_str}")
+    except Exception as e:
+        print(f"  [warn] foreign holding kr: {e}")
+    return result
+
+
 MAIN_COLS = [
     "date",
     "kospi", "kosdaq", "samsung", "hynix", "vkospi",
@@ -701,10 +1003,10 @@ def update_data():
                 result["forced_sale"][TODAY] = dep["forced_sale_eok"]
             return result
 
-    # 3. 외국인 순매수 — 네이버만 (공공데이터에 없음)
+    # 3. 외국인 순매수 — 네이버 여러 경로 + 한경 폴백
     def _foreign_flow():
         try:
-            return fetch_naver_foreign_flow()
+            return fetch_foreign_flow_combined()
         except Exception as e:
             print(f"  [warn] foreign flow failed: {e}")
             return {}
@@ -776,7 +1078,18 @@ def update_data():
     combined = pd.concat([history, df], ignore_index=True)
     combined = save_history(combined)
     print(f"  saved: {len(combined)} rows, latest: {combined['date'].max() if not combined.empty else 'none'}")
-    return combined
+
+    # --- 추가 데이터 (월별/별도) ---
+    us_margin_debt = safe("us_margin_debt", fetch_us_margin_debt, default={})
+    m7_basket = safe("m7_plus", fetch_m7_plus_basket, default={})
+    kr_foreign_holding = safe("foreign_holding_kr", fetch_foreign_holding_kr, default={})
+
+    extras = {
+        "us_margin_debt": us_margin_debt,         # {date: bil_usd}  월별
+        "m7_basket": m7_basket,                   # {ticker: Series}
+        "kr_foreign_holding": kr_foreign_holding, # {date: {amount_trillion, pct}}  월별
+    }
+    return combined, extras
 
 
 def level_from_gap(v, thresholds):
@@ -799,9 +1112,11 @@ def pct_deviation_from_ma(series, window=200):
     return float((cur / ma - 1) * 100)
 
 
-def compute_signals(df):
+def compute_signals(df, extras=None):
+    if extras is None:
+        extras = {}
     if df.empty:
-        return {"kr": {}, "us": {}, "score_kr": 0, "max_kr": 18, "score_us": 0, "max_us": 15,
+        return {"kr": {}, "us": {}, "score_kr": 0, "max_kr": 18, "score_us": 0, "max_us": 21,
                 "label_kr": "대기", "label_us": "대기"}
 
     df = df.sort_values("date").reset_index(drop=True)
@@ -949,6 +1264,34 @@ def compute_signals(df):
             "level": lvl,
             "description": f"현재 {v:.1f} · {why}"
         }
+
+    # US7: 미국 신용잔고 (FINRA Margin Debt) 월별 추세
+    # 3개월 증가율이 S&P500 상승률을 크게 앞지르면 과열 신호
+    us["US7"] = {"name": "미국 신용잔고 추세", "level": 0, "description": "데이터 수집 중"}
+    margin_debt = extras.get("us_margin_debt", {})
+    if margin_debt and len(margin_debt) >= 4:
+        sorted_dates = sorted(margin_debt.keys())
+        latest_v = margin_debt[sorted_dates[-1]]
+        # 3개월 전 값 (월별이므로 인덱스 -4 = 약 3개월 전)
+        if len(sorted_dates) >= 4:
+            prev3m_v = margin_debt[sorted_dates[-4]]
+            debt_growth_3m = (latest_v / prev3m_v - 1) * 100 if prev3m_v > 0 else 0
+            # S&P500 3개월 증가율
+            sp_ser = pd.to_numeric(df["sp500"], errors="coerce").dropna()
+            if len(sp_ser) >= 63:
+                sp_growth_3m = (sp_ser.iloc[-1] / sp_ser.iloc[-63] - 1) * 100
+                gap = debt_growth_3m - sp_growth_3m
+                us["US7"] = {
+                    "name": "미국 신용잔고 vs S&P500 (3개월)",
+                    "level": level_from_gap(gap, [2.0, 5.0, 10.0]),
+                    "description": f"3개월 S&P500 {sp_growth_3m:+.1f}% vs 신용잔고 {debt_growth_3m:+.1f}% (gap {gap:+.1f}%p) · ${latest_v:.0f}B"
+                }
+            else:
+                us["US7"] = {
+                    "name": "미국 신용잔고 (3개월 변화)",
+                    "level": level_from_gap(debt_growth_3m, [3, 7, 12]),
+                    "description": f"3개월 증가율 {debt_growth_3m:+.1f}% · ${latest_v:.0f}B"
+                }
 
     kr_score = sum(s["level"] for s in kr.values())
     us_score = sum(s["level"] for s in us.values())
@@ -1110,95 +1453,157 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
         extras = {}
     df_plot = df.sort_values("date").tail(250).copy() if not df.empty else pd.DataFrame()
 
-    def plot_series_frame(series_dict, lookback=250):
-        if not series_dict:
-            return pd.DataFrame()
-        rows = []
-        for key, s in series_dict.items():
-            if s is None or len(s) == 0:
-                continue
-            tmp = pd.Series(s).copy()
-            tmp.index = pd.to_datetime(tmp.index, errors="coerce")
-            tmp = tmp.dropna()
-            if tmp.empty:
-                continue
-            tmp.index = tmp.index.date
-            rows.append(tmp.rename(key))
-        if not rows:
-            return pd.DataFrame()
-        return pd.concat(rows, axis=1).sort_index().tail(lookback)
+    def sanitize_series(series, min_val=None, max_val=None, max_daily_jump_pct=None):
+        s = pd.to_numeric(series, errors="coerce").copy()
+        if min_val is not None:
+            s = s.where(s >= min_val)
+        if max_val is not None:
+            s = s.where(s <= max_val)
+        if max_daily_jump_pct is not None:
+            prev = s.shift(1)
+            jump = ((s / prev) - 1).abs() * 100
+            s = s.where((jump <= max_daily_jump_pct) | prev.isna())
+        return s
 
-    def to_points(s, *, ffill=False):
-        s = pd.to_numeric(s, errors="coerce")
-        if ffill:
-            s = s.ffill()
+    def series_connected(c, *, min_val=None, max_val=None, max_daily_jump_pct=None):
+        if df_plot.empty or c not in df_plot.columns:
+            return []
+        s = sanitize_series(df_plot[c], min_val=min_val, max_val=max_val, max_daily_jump_pct=max_daily_jump_pct).ffill()
         return [None if pd.isna(v) else round(float(v), 2) for v in s]
 
-    def cum_base100_frame(frame):
-        out = pd.DataFrame(index=frame.index)
-        for c in frame.columns:
-            s = pd.to_numeric(frame[c], errors="coerce").ffill()
-            valid = s.dropna()
-            if valid.empty or valid.iloc[0] == 0:
-                continue
-            out[c] = s / valid.iloc[0] * 100
-        return out
+    def series_nullable(c):
+        if df_plot.empty or c not in df_plot.columns:
+            return []
+        s = pd.to_numeric(df_plot[c], errors="coerce")
+        return [None if pd.isna(v) else round(float(v), 2) for v in s]
+
+    def ma_series(c, window=200):
+        if df.empty or c not in df.columns or df_plot.empty:
+            return []
+        full = pd.to_numeric(df[c], errors="coerce")
+        ma_full = full.rolling(window).mean().tail(len(df_plot))
+        return [None if pd.isna(v) else round(float(v), 2) for v in ma_full]
+
+    def base100(c, *, max_daily_jump_pct=25):
+        if df_plot.empty or c not in df_plot.columns:
+            return []
+        s = sanitize_series(df_plot[c], min_val=1, max_daily_jump_pct=max_daily_jump_pct).ffill()
+        valid = s.dropna()
+        if valid.empty:
+            return []
+        base = valid.iloc[0]
+        if pd.isna(base) or base == 0:
+            return []
+        out = (s / base) * 100
+        return [None if pd.isna(v) else round(float(v), 2) for v in out]
+
+    def y_range(values_list, pad=0.04):
+        vals = []
+        for vs in values_list:
+            vals.extend([v for v in vs if v is not None])
+        if not vals:
+            return None
+        lo, hi = min(vals), max(vals)
+        span = hi - lo
+        if span == 0:
+            span = max(abs(lo) * 0.05, 1)
+        return [round(lo - span * pad, 2), round(hi + span * pad, 2)]
 
     dates = [d.strftime("%Y-%m-%d") for d in df_plot["date"]] if not df_plot.empty else []
-    kr_rel = pd.DataFrame(index=df_plot["date"] if not df_plot.empty else [])
-    if not df_plot.empty:
-        kr_rel["KOSPI"] = pd.to_numeric(df_plot["kospi"], errors="coerce")
-        kr_rel["KOSDAQ"] = pd.to_numeric(df_plot["kosdaq"], errors="coerce")
-        kr_rel = cum_base100_frame(kr_rel)
 
-    semi_frame = pd.DataFrame(index=df_plot["date"] if not df_plot.empty else [])
-    if not df_plot.empty:
-        semi_frame["코스피"] = pd.to_numeric(df_plot["kospi"], errors="coerce")
-        semi_frame["삼성전자"] = pd.to_numeric(df_plot["samsung"], errors="coerce")
-        semi_frame["SK하이닉스"] = pd.to_numeric(df_plot["hynix"], errors="coerce")
-        semi_frame = cum_base100_frame(semi_frame)
-
-    sector_frame = pd.DataFrame(index=df_plot["date"] if not df_plot.empty else [])
-    for c in ["sec_반도체", "sec_방산조선", "sec_바이오", "sec_2차전지", "sec_금융"]:
-        if not df_plot.empty and c in df_plot.columns:
-            sector_frame[c.replace("sec_","")] = pd.to_numeric(df_plot[c], errors="coerce")
-    sector_frame = cum_base100_frame(sector_frame) if not sector_frame.empty else sector_frame
-
-    m7_frame = plot_series_frame(extras.get("m7_basket", {}), lookback=250)
-    m7_base = cum_base100_frame(m7_frame) if not m7_frame.empty else pd.DataFrame()
-    gl_frame = plot_series_frame({
-        "global_liquidity": extras.get("global_liquidity", pd.Series(dtype=float)),
-        "usdjpy": extras.get("usdjpy", pd.Series(dtype=float)),
-    }, lookback=500)
+    kospi = series_connected("kospi", min_val=1000, max_daily_jump_pct=20)
+    kosdaq = series_connected("kosdaq", min_val=300, max_daily_jump_pct=20)
+    sp500 = series_connected("sp500", min_val=1000, max_daily_jump_pct=20)
+    nasdaq = series_connected("nasdaq", min_val=1000, max_daily_jump_pct=20)
+    vkospi = series_connected("vkospi", min_val=5, max_val=100, max_daily_jump_pct=60)
+    cor1m = series_connected("cor1m", min_val=1, max_val=100, max_daily_jump_pct=60)
 
     js_data = {
         "dates": dates,
-        "vkospi": to_points(df_plot["vkospi"], ffill=False) if not df_plot.empty and "vkospi" in df_plot else [],
-        "credit": to_points(df_plot["credit_balance_eok"], ffill=False) if not df_plot.empty and "credit_balance_eok" in df_plot else [],
-        "forced": to_points(df_plot["forced_sale_eok"], ffill=False) if not df_plot.empty and "forced_sale_eok" in df_plot else [],
-        "foreign": to_points(df_plot["foreign_net_eok"], ffill=False) if not df_plot.empty and "foreign_net_eok" in df_plot else [],
-        "vix": to_points(df_plot["vix"], ffill=False) if not df_plot.empty and "vix" in df_plot else [],
-        "ust10y": to_points(df_plot["ust10y"], ffill=False) if not df_plot.empty and "ust10y" in df_plot else [],
-        "cor1m": to_points(df_plot["cor1m"], ffill=False) if not df_plot.empty and "cor1m" in df_plot else [],
-        "kr_dates": [d.strftime("%Y-%m-%d") for d in kr_rel.index] if not kr_rel.empty else [],
-        "kospi_rel": to_points(kr_rel["KOSPI"]) if "KOSPI" in kr_rel else [],
-        "kosdaq_rel": to_points(kr_rel["KOSDAQ"]) if "KOSDAQ" in kr_rel else [],
-        "semi_dates": [d.strftime("%Y-%m-%d") for d in semi_frame.index] if not semi_frame.empty else [],
-        "semi_kospi": to_points(semi_frame["코스피"]) if "코스피" in semi_frame else [],
-        "semi_samsung": to_points(semi_frame["삼성전자"]) if "삼성전자" in semi_frame else [],
-        "semi_hynix": to_points(semi_frame["SK하이닉스"]) if "SK하이닉스" in semi_frame else [],
-        "sector_dates": [d.strftime("%Y-%m-%d") for d in sector_frame.index] if not sector_frame.empty else [],
-        "sec_반도체": to_points(sector_frame["반도체"]) if "반도체" in sector_frame else [],
-        "sec_방산조선": to_points(sector_frame["방산조선"]) if "방산조선" in sector_frame else [],
-        "sec_바이오": to_points(sector_frame["바이오"]) if "바이오" in sector_frame else [],
-        "sec_2차전지": to_points(sector_frame["2차전지"]) if "2차전지" in sector_frame else [],
-        "sec_금융": to_points(sector_frame["금융"]) if "금융" in sector_frame else [],
-        "m7_dates": [d.strftime("%Y-%m-%d") for d in m7_base.index] if not m7_base.empty else [],
-        "m7": {c: to_points(m7_base[c]) for c in m7_base.columns} if not m7_base.empty else {},
-        "gl_dates": [d.strftime("%Y-%m-%d") for d in gl_frame.index] if not gl_frame.empty else [],
-        "global_liquidity": to_points(gl_frame["global_liquidity"], ffill=True) if "global_liquidity" in gl_frame else [],
-        "usdjpy": to_points(gl_frame["usdjpy"], ffill=True) if "usdjpy" in gl_frame else [],
+        "kospi": kospi,
+        "kosdaq": kosdaq,
+        "kospi_ma200": ma_series("kospi", 200),
+        "kosdaq_ma200": ma_series("kosdaq", 200),
+        "kospi_base100": base100("kospi"),
+        "kosdaq_base100": base100("kosdaq"),
+        "samsung_base100": base100("samsung"),
+        "hynix_base100": base100("hynix"),
+        "vkospi": vkospi,
+        "credit": series_connected("credit_balance_eok", min_val=100000, max_daily_jump_pct=15),
+        "forced": series_nullable("forced_sale_eok"),
+        "foreign": series_nullable("foreign_net_eok"),
+        "sp500": sp500,
+        "sp500_ma200": ma_series("sp500", 200),
+        "nasdaq": nasdaq,
+        "nasdaq_ma200": ma_series("nasdaq", 200),
+        "vix": series_connected("vix", min_val=5, max_val=100, max_daily_jump_pct=60),
+        "nvda": series_connected("nvda", min_val=10, max_daily_jump_pct=40),
+        "ust10y": series_connected("ust10y", min_val=0, max_val=10, max_daily_jump_pct=20),
+        "cor1m": cor1m,
+        "sec_반도체": base100("sec_반도체"),
+        "sec_자동차": base100("sec_자동차"),
+        "sec_조선방산": base100("sec_조선방산"),
+        "sec_금융": base100("sec_금융"),
+        "sec_2차전지": base100("sec_2차전지"),
+        "sec_인터넷": base100("sec_인터넷"),
+        "sec_바이오": base100("sec_바이오"),
+        "sp500_range": y_range([sp500, ma_series("sp500", 200)]),
+        "nasdaq_range": y_range([nasdaq, ma_series("nasdaq", 200)]),
+        "kospi_range": y_range([kospi, ma_series("kospi", 200)]),
+        "kosdaq_range": y_range([kosdaq, ma_series("kosdaq", 200)]),
     }
+
+    # --- 추가 데이터 (extras) ---
+    # 1. 미국 신용잔고 (월별)
+    us_margin_debt = extras.get("us_margin_debt", {}) or {}
+    if us_margin_debt:
+        sorted_md = sorted(us_margin_debt.items())
+        js_data["margin_dates"] = [d.strftime("%Y-%m") for d, _ in sorted_md]
+        js_data["margin_vals"] = [round(v, 1) for _, v in sorted_md]
+    else:
+        js_data["margin_dates"] = []
+        js_data["margin_vals"] = []
+
+    # 2. M7 + AVGO + TSM Base 100 + S&P500
+    m7_basket = extras.get("m7_basket", {}) or {}
+    m7_dates = []
+    m7_series = {}  # {ticker: [values]}
+    if m7_basket:
+        # 공통 날짜 인덱스 (S&P500 기준, 없으면 첫 종목)
+        anchor = None
+        if "SP500" in m7_basket and not m7_basket["SP500"].empty:
+            anchor = m7_basket["SP500"]
+        else:
+            for t, s in m7_basket.items():
+                if not s.empty:
+                    anchor = s
+                    break
+        if anchor is not None:
+            cutoff = TODAY - dt.timedelta(days=LOOKBACK_DAYS)
+            anchor = anchor[anchor.index >= cutoff]
+            m7_dates = [d.strftime("%Y-%m-%d") for d in anchor.index]
+            for ticker, s in m7_basket.items():
+                s2 = s[s.index >= cutoff]
+                s2_reidx = s2.reindex(anchor.index).ffill().bfill()
+                # Base 100
+                first_val = s2_reidx.dropna().iloc[0] if not s2_reidx.dropna().empty else None
+                if first_val and first_val > 0:
+                    normed = (s2_reidx / first_val) * 100
+                    m7_series[ticker] = [None if pd.isna(v) else round(float(v), 2) for v in normed]
+    js_data["m7_dates"] = m7_dates
+    js_data["m7_series"] = m7_series
+
+    # 3. 한국 외국인 보유금액 + 비중 (월별)
+    fhold = extras.get("kr_foreign_holding", {}) or {}
+    if fhold:
+        sorted_fh = sorted(fhold.items())
+        js_data["fh_dates"] = [d.strftime("%Y-%m") for d, _ in sorted_fh]
+        js_data["fh_amount"] = [v.get("amount_trillion") for _, v in sorted_fh]
+        js_data["fh_pct"] = [v.get("pct") for _, v in sorted_fh]
+    else:
+        js_data["fh_dates"] = []
+        js_data["fh_amount"] = []
+        js_data["fh_pct"] = []
 
     last_date = df_plot["date"].iloc[-1].strftime("%Y년 %m월 %d일") if not df_plot.empty else "대기"
     kr_color = COLOR.get(signals["label_kr"], "#888")
@@ -1216,113 +1621,358 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
   </div>""")
         return "\n".join(cards)
 
-    html = """<!DOCTYPE html>
-<html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>빚투 모니터</title><script src="https://cdn.jsdelivr.net/npm/plotly.js@2.35.2/dist/plotly.min.js"></script>
+    kr_cards = render_signals(signals["kr"])
+    us_cards = render_signals(signals["us"])
+    regime_kr_html = render_regime_block(regime_kr, "코스피 추세 전망")
+    regime_us_html = render_regime_block(regime_us, "S&P 500 추세 전망")
+
+    html = f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>빚투 모니터 — 추세 전망 & 위험 신호</title>
+<script src="https://cdn.jsdelivr.net/npm/plotly.js@2.35.2/dist/plotly.min.js"></script>
 <style>
-body {font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;max-width:1320px;margin:0 auto;padding:24px;color:#222;background:#fafafa;}
-h1 {font-size:26px;font-weight:600;margin:0 0 6px;} .meta {color:#888;font-size:13px;margin-bottom:20px;}
-.tabs {display:flex;gap:4px;margin-bottom:20px;border-bottom:2px solid #eee;} .tab {padding:12px 22px;cursor:pointer;font-weight:500;font-size:15px;color:#666;border-bottom:2px solid transparent;margin-bottom:-2px;} .tab.active {color:#222;border-bottom-color:#222;}
-.pane {display:none;} .pane.active {display:block;} .overall {background:white;padding:18px 22px;border-radius:12px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center;}
-.overall-label {font-size:13px;color:#888;} .overall-value {font-size:28px;font-weight:600;}
-.regime-block,.chart,.sig {background:white;padding:14px 16px;border-radius:12px;} .regime-block {padding:18px 20px;margin-bottom:20px;}
-.regime-title {font-size:15px;font-weight:600;margin-bottom:14px;color:#333;} .regime-grid {display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
-.regime-card {background:#fafafa;padding:14px 16px;border-radius:10px;border-top:4px solid;} .regime-name {font-size:12px;color:#888;margin-bottom:4px;} .regime-value {font-size:20px;font-weight:600;margin-bottom:2px;} .regime-score {font-size:11px;color:#aaa;margin-bottom:8px;} .regime-reasons {font-size:12px;color:#555;line-height:1.6;}
-.signal-grid {display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-bottom:20px;} .sig {border-top:4px solid;} .sig-name {font-size:12px;color:#888;margin-bottom:4px;} .sig-status {font-size:17px;font-weight:600;margin-bottom:6px;} .sig-desc {font-size:12px;color:#555;line-height:1.4;}
-.chart {margin-bottom:14px;} .chart-grid {display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;} .section-title {font-size:16px;font-weight:600;margin:24px 0 10px;color:#444;} .footer {font-size:11px;color:#aaa;margin-top:32px;padding-top:16px;border-top:1px solid #eee;}
-@media (max-width:768px) { .regime-grid,.chart-grid {grid-template-columns:1fr;} }
-</style></head><body>
-<h1>빚투 모니터</h1><div class="meta">업데이트 __LAST_DATE__</div>
-<div class="tabs"><div class="tab active" data-tab="kr">🇰🇷 한국장 (__KR_LABEL__)</div><div class="tab" data-tab="us">🇺🇸 미국장 (__US_LABEL__)</div></div>
-<div id="pane-kr" class="pane active">__REGIME_KR__<div class="section-title">단기 위험 신호 (일간)</div><div class="overall" style="border-left:6px solid __KR_COLOR__;"><div><div class="overall-label">한국 위험도 점수</div><div class="overall-value" style="color:__KR_COLOR__;">__KR_LABEL__</div></div><div style="font-size:14px;color:#888;">__KR_SCORE__ / __KR_MAX__점</div></div><div class="signal-grid">__KR_CARDS__</div>
-<div class="section-title">차트</div><div class="chart-grid"><div class="chart"><div id="c_kr_rel" style="height:340px;"></div></div><div class="chart"><div id="c_kr_vkospi" style="height:340px;"></div></div></div>
-<div class="chart"><div id="c_kr_credit" style="height:320px;"></div></div><div class="chart"><div id="c_kr_forced" style="height:280px;"></div></div><div class="chart"><div id="c_kr_foreign" style="height:300px;"></div></div><div class="chart"><div id="c_kr_semi" style="height:320px;"></div></div><div class="chart"><div id="c_kr_sector" style="height:340px;"></div></div></div>
-<div id="pane-us" class="pane">__REGIME_US__<div class="section-title">단기 위험 신호 (일간)</div><div class="overall" style="border-left:6px solid __US_COLOR__;"><div><div class="overall-label">미국 위험도 점수</div><div class="overall-value" style="color:__US_COLOR__;">__US_LABEL__</div></div><div style="font-size:14px;color:#888;">__US_SCORE__ / __US_MAX__점</div></div><div class="signal-grid">__US_CARDS__</div>
-<div class="section-title">차트</div><div class="chart"><div id="c_us_m7" style="height:1560px;"></div></div>__US_EXTRA_CHARTS__</div>
-<div class="footer">투자 권유 아님</div>
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+         max-width: 1200px; margin: 0 auto; padding: 24px; color: #222; background: #fafafa; }}
+  h1 {{ font-size: 26px; font-weight: 600; margin: 0 0 6px; }}
+  .meta {{ color: #888; font-size: 13px; margin-bottom: 20px; }}
+  .tabs {{ display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 2px solid #eee; }}
+  .tab {{ padding: 12px 22px; cursor: pointer; font-weight: 500; font-size: 15px; color: #666; border-bottom: 2px solid transparent; margin-bottom: -2px; }}
+  .tab.active {{ color: #222; border-bottom-color: #222; }}
+  .pane {{ display: none; }}
+  .pane.active {{ display: block; }}
+  .overall {{ background: white; padding: 18px 22px; border-radius: 12px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }}
+  .overall-label {{ font-size: 13px; color: #888; }}
+  .overall-value {{ font-size: 28px; font-weight: 600; }}
+  .regime-block {{ background: white; padding: 18px 20px; border-radius: 12px; margin-bottom: 20px; }}
+  .regime-title {{ font-size: 15px; font-weight: 600; margin-bottom: 14px; color: #333; }}
+  .regime-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }}
+  @media (max-width: 768px) {{ .regime-grid {{ grid-template-columns: 1fr; }} }}
+  .regime-card {{ background: #fafafa; padding: 14px 16px; border-radius: 10px; border-top: 4px solid; }}
+  .regime-name {{ font-size: 12px; color: #888; margin-bottom: 4px; }}
+  .regime-value {{ font-size: 20px; font-weight: 600; margin-bottom: 2px; }}
+  .regime-score {{ font-size: 11px; color: #aaa; margin-bottom: 8px; }}
+  .regime-reasons {{ font-size: 12px; color: #555; line-height: 1.6; }}
+  .signal-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-bottom: 20px; }}
+  .sig {{ background: white; padding: 14px 16px; border-radius: 10px; border-top: 4px solid; }}
+  .sig-name {{ font-size: 12px; color: #888; margin-bottom: 4px; }}
+  .sig-status {{ font-size: 17px; font-weight: 600; margin-bottom: 6px; }}
+  .sig-desc {{ font-size: 12px; color: #555; line-height: 1.4; }}
+  .chart {{ background: white; padding: 14px; border-radius: 12px; margin-bottom: 14px; }}
+  .chart-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }}
+  @media (max-width: 768px) {{ .chart-grid {{ grid-template-columns: 1fr; }} }}
+  .section-title {{ font-size: 16px; font-weight: 600; margin: 24px 0 10px; color: #444; }}
+  .footer {{ font-size: 11px; color: #aaa; margin-top: 32px; padding-top: 16px; border-top: 1px solid #eee; }}
+</style>
+</head>
+<body>
+<h1>빚투 모니터</h1>
+<div class="meta">시장 추세 전망 & 위험 신호 · 매일 평일 17:30 자동 갱신 (1일 1회) · 업데이트 {last_date}</div>
+
+<div class="tabs">
+  <div class="tab active" data-tab="kr">🇰🇷 한국장 ({signals['label_kr']})</div>
+  <div class="tab" data-tab="us">🇺🇸 미국장 ({signals['label_us']})</div>
+</div>
+
+<div id="pane-kr" class="pane active">
+  {regime_kr_html}
+  <div class="section-title">단기 위험 신호 (일간)</div>
+  <div class="overall" style="border-left: 6px solid {kr_color};">
+    <div><div class="overall-label">한국 위험도 점수</div><div class="overall-value" style="color: {kr_color};">{signals['label_kr']}</div></div>
+    <div style="font-size: 14px; color: #888;">{signals['score_kr']} / {signals['max_kr']}점</div>
+  </div>
+  <div class="signal-grid">{kr_cards}</div>
+  <div class="section-title">차트</div>
+  <div class="chart-grid">
+    <div class="chart"><div id="c_kr_rel" style="height:320px;"></div></div>
+    <div class="chart"><div id="c_kr_vkospi" style="height:320px;"></div></div>
+  </div>
+  <div class="chart-grid">
+    <div class="chart"><div id="c_kr_kospi_abs" style="height:280px;"></div></div>
+    <div class="chart"><div id="c_kr_kosdaq_abs" style="height:280px;"></div></div>
+  </div>
+  <div class="chart"><div id="c_kr_credit" style="height:300px;"></div></div>
+  <div class="chart"><div id="c_kr_forced" style="height:280px;"></div></div>
+  <div class="chart"><div id="c_kr_foreign" style="height:300px;"></div></div>
+  <div class="chart"><div id="c_kr_foreign_hold" style="height:320px;"></div></div>
+  <div class="chart"><div id="c_kr_semi" style="height:280px;"></div></div>
+  <div class="chart"><div id="c_kr_sector" style="height:320px;"></div></div>
+</div>
+
+<div id="pane-us" class="pane">
+  {regime_us_html}
+  <div class="section-title">단기 위험 신호 (일간)</div>
+  <div class="overall" style="border-left: 6px solid {us_color};">
+    <div><div class="overall-label">미국 위험도 점수</div><div class="overall-value" style="color: {us_color};">{signals['label_us']}</div></div>
+    <div style="font-size: 14px; color: #888;">{signals['score_us']} / {signals['max_us']}점</div>
+  </div>
+  <div class="signal-grid">{us_cards}</div>
+  <div class="section-title">차트</div>
+  <div class="chart-grid">
+    <div class="chart"><div id="c_us_sp" style="height:300px;"></div></div>
+    <div class="chart"><div id="c_us_nasdaq" style="height:300px;"></div></div>
+  </div>
+  <div class="chart-grid">
+    <div class="chart"><div id="c_us_vix" style="height:280px;"></div></div>
+    <div class="chart"><div id="c_us_nvda" style="height:280px;"></div></div>
+  </div>
+  <div class="chart"><div id="c_us_rate" style="height:280px;"></div></div>
+  <div class="chart"><div id="c_us_cor1m" style="height:300px;"></div></div>
+  <div class="chart"><div id="c_us_margin" style="height:320px;"></div></div>
+  <div class="chart"><div id="c_us_m7" style="height:460px;"></div></div>
+</div>
+
+<div class="footer">데이터: FinanceDataReader, FRED(미국 10Y), 네이버 금융/공공데이터/보조 스크래핑 · 투자 권유 아님</div>
+
 <script>
-const D = __JSON__;
-const base = {margin:{t:40,r:55,b:35,l:55},font:{family:'system-ui'},paper_bgcolor:'white',plot_bgcolor:'white',legend:{orientation:'h',y:-0.18},hovermode:'x unified'};
-function bindTabs(){document.querySelectorAll('.tab').forEach(function(tab){tab.addEventListener('click',function(){document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active')});document.querySelectorAll('.pane').forEach(function(p){p.classList.remove('active')});tab.classList.add('active');document.getElementById('pane-'+tab.dataset.tab).classList.add('active');});});}
-function noData(id,msg){document.getElementById(id).innerHTML='<div style="height:100%;display:flex;align-items:center;justify-content:center;color:#999;">'+msg+'</div>';}
-function safePlot(id,traces,title,extra){try{var hasData=(traces||[]).some(function(t){return (t.y||[]).some(function(v){return v!==null&&v!==undefined;});}); if(!hasData){noData(id,'데이터 수집 실패 또는 데이터 없음');return;} Plotly.newPlot(id,traces,Object.assign({},base,{title:{text:title,font:{size:13}}},extra||{}),{displaylogo:false,responsive:true});}catch(e){console.error(id,e);noData(id,'차트 렌더 실패');}}
+const D = {json.dumps(js_data, ensure_ascii=False)};
+const base = {{
+  margin: {{t: 30, r: 45, b: 35, l: 50}}, font: {{family: 'system-ui'}},
+  paper_bgcolor: 'white', plot_bgcolor: 'white', legend: {{orientation: 'h', y: -0.2}}, hovermode: 'x unified'
+}};
+
+function bindTabs() {{
+  document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', e => {{
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.pane').forEach(x => x.classList.remove('active'));
+    e.currentTarget.classList.add('active');
+    const pane = document.getElementById('pane-' + e.currentTarget.dataset.tab);
+    if (pane) pane.classList.add('active');
+    setTimeout(() => window.dispatchEvent(new Event('resize')), 120);
+  }}));
+}}
+
+function hasValues(arr) {{
+  return Array.isArray(arr) && arr.some(v => v !== null && v !== undefined && !Number.isNaN(v));
+}}
+function showEmpty(id, message='데이터 수집 실패 또는 데이터 없음') {{
+  const el = document.getElementById(id);
+  if (el) el.innerHTML = `<div style="height:100%;display:flex;align-items:center;justify-content:center;color:#888;font-size:13px;">${{message}}</div>`;
+}}
+function safePlot(id, traces, title, extra) {{
+  try {{
+    const valid = (traces || []).filter(t => hasValues(t.y));
+    if (!D.dates.length || valid.length === 0) {{ showEmpty(id); return; }}
+    Plotly.newPlot(id, valid, {{...base, title: {{text: title, font: {{size: 13}}}}, ...(extra || {{}})}});
+  }} catch (err) {{
+    console.error('plot error', id, err);
+    showEmpty(id, '차트 렌더링 실패');
+  }}
+}}
+
 bindTabs();
-function line(color,width){return {color:color,width:width||2};}
+
 safePlot('c_kr_rel', [
-{x:D.kr_dates,y:D.kospi_rel,type:'scatter',mode:'lines',name:'코스피',connectgaps:true,line:line('#185FA5',2.8)},
-{x:D.kr_dates,y:D.kosdaq_rel,type:'scatter',mode:'lines',name:'코스닥',connectgaps:true,line:line('#534AB7',2.5)}], '코스피 vs 코스닥 상대 추세 (Base 100)', {yaxis:{title:'Base 100'}});
-safePlot('c_kr_vkospi', [{x:D.dates,y:D.vkospi,type:'scatter',mode:'lines',name:'VKOSPI',line:line('#A32D2D',2.4),fill:'tozeroy',fillcolor:'rgba(163,45,45,0.08)'}], 'VKOSPI 공포지수', {yaxis:{title:'VKOSPI'}});
+  {{x: D.dates, y: D.kospi_base100, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#185FA5', width: 2.5}}}},
+  {{x: D.dates, y: D.kosdaq_base100, type: 'scatter', mode: 'lines', name: '코스닥', connectgaps: true, line: {{color: '#534AB7', width: 2.5}}}}
+], '코스피 vs 코스닥 상대 추세 (Base 100)', {{yaxis: {{title: 'Base 100'}}}});
+
+safePlot('c_kr_vkospi', [
+  {{x: D.dates, y: D.vkospi, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VKOSPI', connectgaps: false, line: {{color: '#A32D2D', width: 2.2}}, fillcolor: 'rgba(163,45,45,0.10)'}}
+], 'VKOSPI 공포지수', {{yaxis: {{title: 'VKOSPI', range: [0, 40]}}, shapes: [
+  {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 20, y1: 20, line: {{color: '#BA7517', width: 1, dash: 'dot'}}}},
+  {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 30, y1: 30, line: {{color: '#A32D2D', width: 1, dash: 'dot'}}}}
+]}});
+
+safePlot('c_kr_kospi_abs', [
+  {{x: D.dates, y: D.kospi, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#185FA5', width: 2.3}}}},
+  {{x: D.dates, y: D.kospi_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {{color: '#A32D2D', width: 1.4, dash: 'dash'}}}}
+], '코스피 절대 추세', D.kospi_range ? {{yaxis: {{range: D.kospi_range}}}} : undefined);
+
+safePlot('c_kr_kosdaq_abs', [
+  {{x: D.dates, y: D.kosdaq, type: 'scatter', mode: 'lines', name: '코스닥', connectgaps: true, line: {{color: '#534AB7', width: 2.3}}}},
+  {{x: D.dates, y: D.kosdaq_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {{color: '#A32D2D', width: 1.4, dash: 'dash'}}}}
+], '코스닥 절대 추세', D.kosdaq_range ? {{yaxis: {{range: D.kosdaq_range}}}} : undefined);
+
 safePlot('c_kr_credit', [
-{x:D.dates,y:D.credit,type:'scatter',mode:'lines',name:'신용잔고(억)',line:line('#993C1D',2.2)},
-{x:D.kr_dates,y:D.kospi_rel,type:'scatter',mode:'lines',name:'코스피(Base100)',yaxis:'y2',line:{color:'#185FA5',width:2,dash:'dot'}}], '신용잔고 vs 코스피 상대 추세', {yaxis:{title:'신용잔고(억)'},yaxis2:{title:'코스피(Base100)',overlaying:'y',side:'right'}});
-safePlot('c_kr_forced', [{x:D.dates,y:D.forced,type:'bar',name:'반대매매(억)',marker:{color:(D.forced||[]).map(function(v){return v>=600?'#A32D2D':v>=400?'#D85A30':v>=200?'#BA7517':'#888';})}}], '일일 반대매매');
-safePlot('c_kr_foreign', [{x:D.dates,y:D.foreign,type:'bar',name:'외국인(억)',marker:{color:(D.foreign||[]).map(function(v){return v<0?'#A32D2D':'#1D9E75';})}}], '외국인 일별 순매수/매도 (코스피+코스닥)');
+  {{x: D.dates, y: D.kospi, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#185FA5', width: 2.2}}}},
+  {{x: D.dates, y: D.credit, type: 'scatter', mode: 'lines', name: '신용잔고(억)', yaxis: 'y2', connectgaps: false, line: {{color: '#993C1D', width: 2, dash: 'dash'}}}}
+], '코스피 vs 신용잔고', {{yaxis: {{title: '코스피'}}, yaxis2: {{title: '잔고(억)', overlaying: 'y', side: 'right'}}}});
+
+safePlot('c_kr_forced', [{{x: D.dates, y: D.forced, type: 'bar', name: '반대매매(억)', marker: {{color: (D.forced || []).map(v => v >= 600 ? '#A32D2D' : v >= 400 ? '#D85A30' : v >= 200 ? '#BA7517' : '#888')}}}}], '일일 반대매매');
+
+safePlot('c_kr_foreign', [{{x: D.dates, y: D.foreign, type: 'bar', name: '외국인(억)', marker: {{color: (D.foreign || []).map(v => (v ?? 0) < 0 ? '#A32D2D' : '#1D9E75')}}}}], '외국인 일별 순매수/매도 (코스피+코스닥)');
+
 safePlot('c_kr_semi', [
-{x:D.semi_dates,y:D.semi_kospi,type:'scatter',mode:'lines',name:'코스피',line:{color:'#888',width:1.5,dash:'dot'}},
-{x:D.semi_dates,y:D.semi_samsung,type:'scatter',mode:'lines',name:'삼성전자',line:line('#185FA5',2.6)},
-{x:D.semi_dates,y:D.semi_hynix,type:'scatter',mode:'lines',name:'SK하이닉스',line:line('#534AB7',2.6)}], '반도체 누적 추세 (Base 100)', {yaxis:{title:'Base 100'}});
+  {{x: D.dates, y: D.kospi_base100, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#888', width: 1.2, dash: 'dot'}}}},
+  {{x: D.dates, y: D.samsung_base100, type: 'scatter', mode: 'lines', name: '삼성전자', connectgaps: true, line: {{color: '#185FA5', width: 2.2}}}},
+  {{x: D.dates, y: D.hynix_base100, type: 'scatter', mode: 'lines', name: 'SK하이닉스', connectgaps: true, line: {{color: '#534AB7', width: 2.2}}}}
+], '반도체 누적 추세 (Base 100)', {{yaxis: {{title: 'Base 100'}}}});
+
 safePlot('c_kr_sector', [
-{x:D.sector_dates,y:D.sec_반도체,type:'scatter',mode:'lines',name:'반도체',line:line('#185FA5',2.6)},
-{x:D.sector_dates,y:D.sec_방산조선,type:'scatter',mode:'lines',name:'방산조선',line:line('#534AB7',2.3)},
-{x:D.sector_dates,y:D.sec_바이오,type:'scatter',mode:'lines',name:'바이오',line:line('#1D9E75',2.1)},
-{x:D.sector_dates,y:D.sec_2차전지,type:'scatter',mode:'lines',name:'2차전지',line:line('#BA7517',2.1)},
-{x:D.sector_dates,y:D.sec_금융,type:'scatter',mode:'lines',name:'금융',line:line('#888',2.0)}], '업종 바구니 누적 추세 (Base 100)', {yaxis:{title:'Base 100'}});
-var m7Colors={SP500:'#888',IXIC:'#185FA5',AAPL:'#555',MSFT:'#3b82f6',GOOGL:'#0ea5e9',AMZN:'#f59e0b',META:'#6366f1',NVDA:'#10b981',TSLA:'#ef4444',AVGO:'#8b5cf6',TSM:'#14b8a6'};
-var m7Traces=Object.keys(D.m7||{}).map(function(k){return {x:D.m7_dates,y:D.m7[k],type:'scatter',mode:'lines',name:(k==='IXIC'?'나스닥':(k==='SP500'?'S&P500':k)),line:{color:m7Colors[k]||'#333',width:(k==='SP500'||k==='IXIC')?2.6:1.9}}});
-safePlot('c_us_m7', m7Traces, '미국 빅테크/M7/브로드컴/TSMC + 나스닥 상대 추세 (Base 100)', {yaxis:{title:'Base 100'}});
-safePlot('c_us_vix', [{x:D.dates,y:D.vix,type:'scatter',mode:'lines',name:'VIX',line:line('#A32D2D',2.4),fill:'tozeroy',fillcolor:'rgba(163,45,45,0.08)'}], 'VIX 공포지수', {yaxis:{title:'VIX'}});
-safePlot('c_us_rate', [{x:D.dates,y:D.ust10y,type:'scatter',mode:'lines',name:'미국 10년물',line:line('#BA7517',2.4)}], '미국 10년물 국채금리', {yaxis:{title:'%'}});
-safePlot('c_us_cor1m', [{x:D.dates,y:D.cor1m,type:'scatter',mode:'lines',name:'COR1M',line:line('#534AB7',2.4),fill:'tozeroy',fillcolor:'rgba(83,74,183,0.08)'}], 'CBOE 1개월 내재상관 (COR1M)', {yaxis:{title:'COR1M',range:[0,100]}});
-safePlot('c_us_gl', [
-{x:D.gl_dates,y:D.global_liquidity,type:'scatter',mode:'lines',name:'글로벌 유동성 proxy',line:line('#185FA5',2.8)},
-{x:D.gl_dates,y:D.usdjpy,type:'scatter',mode:'lines',name:'달러-엔',yaxis:'y2',line:line('#9ca3af',2.1)}], '글로벌 유동성 Proxy vs 달러-엔', {yaxis:{title:'Proxy (Base 100)'},yaxis2:{title:'엔',overlaying:'y',side:'right'}});
-</script></body></html>"""
-    html = (html.replace('__LAST_DATE__', last_date)
-        .replace('__KR_LABEL__', signals['label_kr'])
-        .replace('__US_LABEL__', signals['label_us'])
-        .replace('__KR_COLOR__', kr_color)
-        .replace('__US_COLOR__', us_color)
-        .replace('__KR_SCORE__', str(signals['score_kr']))
-        .replace('__KR_MAX__', str(signals['max_kr']))
-        .replace('__US_SCORE__', str(signals['score_us']))
-        .replace('__US_MAX__', str(signals['max_us']))
-        .replace('__REGIME_KR__', render_regime_block(regime_kr, '코스피 추세 전망'))
-        .replace('__REGIME_US__', render_regime_block(regime_us, 'S&P 500 추세 전망'))
-        .replace('__KR_CARDS__', render_signals(signals['kr']))
-        .replace('__US_CARDS__', render_signals(signals['us']))
-        .replace('__US_EXTRA_CHARTS__', ''.join([
-            '<div class="chart-grid"><div class="chart"><div id="c_us_vix" style="height:300px;"></div></div><div class="chart"><div id="c_us_rate" style="height:300px;"></div></div></div>' if js_data.get('vix') and any(v is not None for v in js_data.get('vix', [])) and js_data.get('ust10y') and any(v is not None for v in js_data.get('ust10y', [])) else ('<div class="chart"><div id="c_us_vix" style="height:300px;"></div></div>' if js_data.get('vix') and any(v is not None for v in js_data.get('vix', [])) else ('<div class="chart"><div id="c_us_rate" style="height:300px;"></div></div>' if js_data.get('ust10y') and any(v is not None for v in js_data.get('ust10y', [])) else '')),
-            '<div class="chart"><div id="c_us_cor1m" style="height:320px;"></div></div>' if js_data.get('cor1m') and any(v is not None for v in js_data.get('cor1m', [])) else '',
-            '<div class="chart"><div id="c_us_gl" style="height:380px;"></div></div>' if ((js_data.get('global_liquidity') and any(v is not None for v in js_data.get('global_liquidity', []))) or (js_data.get('usdjpy') and any(v is not None for v in js_data.get('usdjpy', [])))) else ''
-        ]))
-        .replace('__JSON__', json.dumps(js_data, ensure_ascii=False)))
-    fp = DOCS_DIR / 'index.html'
-    fp.write_text(html, encoding='utf-8')
-    print(f"[ok] dashboard written: {fp}")
+  {{x: D.dates, y: D.sec_반도체, type: 'scatter', mode: 'lines', name: '반도체', connectgaps: false, line: {{color: '#185FA5', width: 2.2}}}},
+  {{x: D.dates, y: D.sec_자동차, type: 'scatter', mode: 'lines', name: '자동차', connectgaps: false, line: {{color: '#7D56F4', width: 2.0}}}},
+  {{x: D.dates, y: D.sec_조선방산, type: 'scatter', mode: 'lines', name: '조선방산', connectgaps: false, line: {{color: '#534AB7', width: 2.0}}}},
+  {{x: D.dates, y: D.sec_금융, type: 'scatter', mode: 'lines', name: '금융', connectgaps: false, line: {{color: '#888', width: 1.8}}}},
+  {{x: D.dates, y: D.sec_2차전지, type: 'scatter', mode: 'lines', name: '2차전지', connectgaps: false, line: {{color: '#BA7517', width: 1.8}}}},
+  {{x: D.dates, y: D.sec_인터넷, type: 'scatter', mode: 'lines', name: '인터넷', connectgaps: false, line: {{color: '#1D9E75', width: 1.8}}}},
+  {{x: D.dates, y: D.sec_바이오, type: 'scatter', mode: 'lines', name: '바이오', connectgaps: false, line: {{color: '#2AA198', width: 1.8}}}}
+], '업종 바구니 누적 추세 (Base 100)', {{yaxis: {{title: 'Base 100'}}}});
+
+safePlot('c_us_sp', [
+  {{x: D.dates, y: D.sp500, type: 'scatter', mode: 'lines', name: 'S&P 500', connectgaps: true, line: {{color: '#185FA5', width: 2.3}}}},
+  {{x: D.dates, y: D.sp500_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {{color: '#A32D2D', width: 1.4, dash: 'dash'}}}}
+], 'S&P 500 + 200일선', D.sp500_range ? {{yaxis: {{range: D.sp500_range}}}} : undefined);
+
+safePlot('c_us_nasdaq', [
+  {{x: D.dates, y: D.nasdaq, type: 'scatter', mode: 'lines', name: '나스닥', connectgaps: true, line: {{color: '#534AB7', width: 2.3}}}},
+  {{x: D.dates, y: D.nasdaq_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {{color: '#A32D2D', width: 1.4, dash: 'dash'}}}}
+], '나스닥 + 200일선', D.nasdaq_range ? {{yaxis: {{range: D.nasdaq_range}}}} : undefined);
+
+safePlot('c_us_vix', [{{x: D.dates, y: D.vix, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VIX', connectgaps: false, line: {{color: '#A32D2D', width: 2.2}}, fillcolor: 'rgba(163,45,45,0.10)'}}], 'VIX 공포지수');
+
+safePlot('c_us_nvda', [{{x: D.dates, y: D.nvda, type: 'scatter', mode: 'lines', name: 'NVDA', connectgaps: false, line: {{color: '#1D9E75', width: 2.2}}}}], '엔비디아');
+
+safePlot('c_us_rate', [{{x: D.dates, y: D.ust10y, type: 'scatter', mode: 'lines', name: '10Y', connectgaps: false, line: {{color: '#BA7517', width: 2.2}}}}], '미국 10년물 국채금리 (%)');
+
+safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'COR1M', connectgaps: false, line: {{color: '#534AB7', width: 2.2}}, fillcolor: 'rgba(83,74,183,0.08)'}}], 'CBOE 1개월 내재상관 (COR1M)', {{yaxis: {{title: 'COR1M', range: [0, 100]}}, shapes: [
+  {{type: 'rect', xref: 'paper', x0: 0, x1: 1, y0: 60, y1: 100, fillcolor: 'rgba(163,45,45,0.08)', line: {{width: 0}}}},
+  {{type: 'rect', xref: 'paper', x0: 0, x1: 1, y0: 0, y1: 15, fillcolor: 'rgba(186,117,23,0.10)', line: {{width: 0}}}},
+  {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 60, y1: 60, line: {{color: '#A32D2D', width: 1, dash: 'dot'}}}},
+  {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 20, y1: 20, line: {{color: '#1D9E75', width: 1, dash: 'dot'}}}},
+  {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 15, y1: 15, line: {{color: '#BA7517', width: 1, dash: 'dot'}}}}
+]}});
+
+// === 미국 신용잔고 (월별, FINRA) ===
+(function() {{
+  const id = 'c_us_margin';
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (!D.margin_dates || D.margin_dates.length === 0) {{
+    showEmpty(id);
+    return;
+  }}
+  try {{
+    Plotly.newPlot(id, [{{
+      x: D.margin_dates, y: D.margin_vals, type: 'bar', name: '신용잔고 (십억$)',
+      marker: {{color: '#A32D2D', opacity: 0.85}}
+    }}], Object.assign({{}}, base, {{
+      title: {{text: '미국 신용잔고 (FINRA Margin Debt, 월별)', font: {{size: 14}}}},
+      yaxis: {{title: '십억 USD'}},
+      xaxis: {{title: ''}}
+    }}), {{displayModeBar: false, responsive: true}});
+  }} catch (e) {{ console.error('margin plot:', e); showEmpty(id); }}
+}})();
+
+// === M7 + AVGO + TSM vs S&P500 (Base 100) ===
+(function() {{
+  const id = 'c_us_m7';
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (!D.m7_dates || D.m7_dates.length === 0 || !D.m7_series || Object.keys(D.m7_series).length === 0) {{
+    showEmpty(id);
+    return;
+  }}
+  try {{
+    const colorMap = {{
+      'SP500': '#888',
+      'AAPL':  '#185FA5',
+      'MSFT':  '#0078D4',
+      'GOOGL': '#34A853',
+      'AMZN':  '#FF9900',
+      'META':  '#1877F2',
+      'NVDA':  '#76B900',
+      'TSLA':  '#CC0000',
+      'AVGO':  '#CC092F',
+      'TSM':   '#E4002B'
+    }};
+    const labelMap = {{
+      'SP500': 'S&P500',
+      'AAPL':  '애플 AAPL',
+      'MSFT':  'MS MSFT',
+      'GOOGL': '구글 GOOGL',
+      'AMZN':  '아마존 AMZN',
+      'META':  '메타 META',
+      'NVDA':  '엔비디아 NVDA',
+      'TSLA':  '테슬라 TSLA',
+      'AVGO':  '브로드컴 AVGO',
+      'TSM':   'TSMC TSM'
+    }};
+    const order = ['SP500', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA', 'AVGO', 'TSM'];
+    const traces = [];
+    order.forEach(t => {{
+      const vals = D.m7_series[t];
+      if (!vals || !hasValues(vals)) return;
+      const isSP = t === 'SP500';
+      traces.push({{
+        x: D.m7_dates,
+        y: vals,
+        type: 'scatter',
+        mode: 'lines',
+        name: labelMap[t] || t,
+        connectgaps: true,
+        line: {{
+          color: colorMap[t] || '#666',
+          width: isSP ? 2.0 : 1.9,
+          dash: isSP ? 'dot' : 'solid'
+        }}
+      }});
+    }});
+    if (traces.length === 0) {{ showEmpty(id); return; }}
+    Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
+      title: {{text: 'M7 + 브로드컴 + TSMC vs S&P500 누적 추세 (Base 100)', font: {{size: 14}}}},
+      yaxis: {{title: 'Base 100'}},
+      legend: {{orientation: 'h', y: -0.15, x: 0, xanchor: 'left'}},
+      margin: {{t: 40, r: 50, b: 60, l: 55}}
+    }}), {{displayModeBar: false, responsive: true}});
+  }} catch (e) {{ console.error('m7 plot:', e); showEmpty(id); }}
+}})();
+
+// === 한국 외국인 보유금액 + 비중 (월별, 이중축) ===
+(function() {{
+  const id = 'c_kr_foreign_hold';
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (!D.fh_dates || D.fh_dates.length === 0) {{
+    showEmpty(id);
+    return;
+  }}
+  const hasAmount = hasValues(D.fh_amount);
+  const hasPct = hasValues(D.fh_pct);
+  if (!hasAmount && !hasPct) {{ showEmpty(id); return; }}
+  try {{
+    const traces = [];
+    if (hasAmount) {{
+      traces.push({{
+        x: D.fh_dates, y: D.fh_amount, type: 'bar', name: '보유금액(조원)',
+        marker: {{color: '#185FA5', opacity: 0.75}}
+      }});
+    }}
+    if (hasPct) {{
+      traces.push({{
+        x: D.fh_dates, y: D.fh_pct, type: 'scatter', mode: 'lines+markers',
+        name: '보유비중(%)', yaxis: 'y2',
+        line: {{color: '#BA7517', width: 2}}, marker: {{size: 5}}
+      }});
+    }}
+    Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
+      title: {{text: '외국인 주식 보유금액 + 비중 (월별)', font: {{size: 14}}}},
+      yaxis: {{title: '조원'}},
+      yaxis2: {{title: '비중(%)', overlaying: 'y', side: 'right'}},
+      legend: {{orientation: 'h', y: -0.18}}
+    }}), {{displayModeBar: false, responsive: true}});
+  }} catch (e) {{ console.error('fhold plot:', e); showEmpty(id); }}
+}})();
+</script>
+</body>
+</html>
+"""
+    (DOCS_DIR / "index.html").write_text(html, encoding="utf-8")
+    print("  dashboard written")
+
 
 def main():
     try:
-        df = update_data()
+        df, extras = update_data()
     except Exception as e:
         print(f"[error] update_data fatal: {e}")
         import traceback; traceback.print_exc()
         df = load_history()
+        extras = {"us_margin_debt": {}, "m7_basket": {}, "kr_foreign_holding": {}}
 
-    extras = {}
-    try:
-        extras["m7_basket"] = fetch_m7_plus_basket()
-    except Exception as e:
-        print(f"[warn] m7 basket: {e}")
-        extras["m7_basket"] = {}
-    try:
-        gl = fetch_global_liquidity_proxy()
-        extras.update(gl)
-    except Exception as e:
-        print(f"[warn] global liquidity: {e}")
-        extras["global_liquidity"] = pd.Series(dtype=float)
-        extras["usdjpy"] = pd.Series(dtype=float)
-
-    signals = compute_signals(df)
+    signals = compute_signals(df, extras)
     regime_kr = compute_regime(df["kospi"]) if not df.empty else {}
     regime_us = compute_regime(df["sp500"]) if not df.empty else {}
 
