@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>빚투 모니터 — 추세 전망 & 위험 신호</title>
+<script src="https://cdn.jsdelivr.net/npm/plotly.js@2.35.2/dist/plotly.min.js"></script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+         max-width: 1200px; margin: 0 auto; padding: 24px; color: #222; background: #fafafa; }
+  h1 { font-size: 26px; font-weight: 600; margin: 0 0 6px; }
+  .meta { color: #888; font-size: 13px; margin-bottom: 20px; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 2px solid #eee; }
+  .tab { padding: 12px 22px; cursor: pointer; font-weight: 500; font-size: 15px; color: #666;
+          border-bottom: 2px solid transparent; margin-bottom: -2px; }
+  .tab.active { color: #222; border-bottom-color: #222; }
+  .pane { display: none; }
+  .pane.active { display: block; }
+  .overall { background: white; padding: 18px 22px; border-radius: 12px; margin-bottom: 20px;
+              display: flex; justify-content: space-between; align-items: center; }
+  .overall-label { font-size: 13px; color: #888; }
+  .overall-value { font-size: 28px; font-weight: 600; }
+  .regime-block { background: white; padding: 18px 20px; border-radius: 12px; margin-bottom: 20px; }
+  .regime-title { font-size: 15px; font-weight: 600; margin-bottom: 14px; color: #333; }
+  .regime-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  @media (max-width: 768px) { .regime-grid { grid-template-columns: 1fr; } }
+  .regime-card { background: #fafafa; padding: 14px 16px; border-radius: 10px; border-top: 4px solid; }
+  .regime-name { font-size: 12px; color: #888; margin-bottom: 4px; }
+  .regime-value { font-size: 20px; font-weight: 600; margin-bottom: 2px; }
+  .regime-score { font-size: 11px; color: #aaa; margin-bottom: 8px; }
+  .regime-reasons { font-size: 12px; color: #555; line-height: 1.6; }
+  .signal-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+                   gap: 12px; margin-bottom: 20px; }
+  .sig { background: white; padding: 14px 16px; border-radius: 10px; border-top: 4px solid; }
+  .sig-name { font-size: 12px; color: #888; margin-bottom: 4px; }
+  .sig-status { font-size: 17px; font-weight: 600; margin-bottom: 6px; }
+  .sig-desc { font-size: 12px; color: #555; line-height: 1.4; }
+  .chart { background: white; padding: 14px; border-radius: 12px; margin-bottom: 14px; }
+  .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
+  @media (max-width: 768px) { .chart-grid { grid-template-columns: 1fr; } }
+  .section-title { font-size: 16px; font-weight: 600; margin: 24px 0 10px; color: #444; }
+  .footer { font-size: 11px; color: #aaa; margin-top: 32px; padding-top: 16px; border-top: 1px solid #eee; }
+</style>
+</head>
+<body>
+<h1>빚투 모니터</h1>
+<div class="meta">시장 추세 전망 & 위험 신호 · 매일 평일 17:30 자동 갱신 (1일 1회) · 업데이트 2026년 04월 17일</div>
+
+<div class="tabs">
+  <div class="tab active" data-tab="kr">🇰🇷 한국장 (주의)</div>
+  <div class="tab" data-tab="us">🇺🇸 미국장 (주의)</div>
+</div>
+
+<div id="pane-kr" class="pane active">
+  
+      <div class="regime-block">
+        <div class="regime-title">코스피 추세 전망</div>
+        <div class="regime-grid">
+        <div class="regime-card" style="border-top-color: #1D9E75;">
+          <div class="regime-name">단기 (1~3개월)</div>
+          <div class="regime-value" style="color: #1D9E75;">강세</div>
+          <div class="regime-score">점수 +3</div>
+          <div class="regime-reasons">· 최근 30일 +17.9% (강한 상승)<br>· 50일선 우상향 +5.9%</div>
+        </div>
+        <div class="regime-card" style="border-top-color: #1D9E75;">
+          <div class="regime-name">중기 (3~6개월)</div>
+          <div class="regime-value" style="color: #1D9E75;">강세</div>
+          <div class="regime-score">점수 +3</div>
+          <div class="regime-reasons">· 50일선이 200일선 위 (골든크로스 유지)<br>· 3개월 +29.1%</div>
+        </div>
+        <div class="regime-card" style="border-top-color: #1D9E75;">
+          <div class="regime-name">장기 (6~12개월)</div>
+          <div class="regime-value" style="color: #1D9E75;">강세</div>
+          <div class="regime-score">점수 +3</div>
+          <div class="regime-reasons">· 200일선 상승 +11.3%<br>· 52주 고점 근처 (97%)</div>
+        </div></div>
+      </div>
+    
+
+  <div class="section-title">단기 위험 신호 (일간)</div>
+  <div class="overall" style="border-left: 6px solid #BA7517;">
+    <div>
+      <div class="overall-label">한국 위험도 점수</div>
+      <div class="overall-value" style="color: #BA7517;">주의</div>
+    </div>
+    <div style="font-size: 14px; color: #888;">3 / 18점</div>
+  </div>
+
+  <div class="signal-grid">
+  <div class="sig" style="border-color: #1D9E75">
+    <div class="sig-name">KR1. 반대매매 일평균</div>
+    <div class="sig-status" style="color: #1D9E75">안전</div>
+    <div class="sig-desc">오늘 0억 / 20일 평균 157억</div>
+  </div>
+
+  <div class="sig" style="border-color: #1D9E75">
+    <div class="sig-name">KR2. 신용잔고 증가율이 코스피 추월</div>
+    <div class="sig-status" style="color: #1D9E75">안전</div>
+    <div class="sig-desc">30일 코스피 +17.9% vs 신용잔고 -1.0% (-18.9%p)</div>
+  </div>
+
+  <div class="sig" style="border-color: #1D9E75">
+    <div class="sig-name">KR3. 반도체 양대장 동시 -3%</div>
+    <div class="sig-status" style="color: #1D9E75">안전</div>
+    <div class="sig-desc">최근 5일 동시 -3%: 0회</div>
+  </div>
+
+  <div class="sig" style="border-color: #1D9E75">
+    <div class="sig-name">KR4. 외국인 7일 누적 순매도</div>
+    <div class="sig-status" style="color: #1D9E75">안전</div>
+    <div class="sig-desc">데이터 부족</div>
+  </div>
+
+  <div class="sig" style="border-color: #A32D2D">
+    <div class="sig-name">KR5. 코스피-200일선 괴리율</div>
+    <div class="sig-status" style="color: #A32D2D">경고</div>
+    <div class="sig-desc">200일선 대비 +46.8%</div>
+  </div>
+
+  <div class="sig" style="border-color: #1D9E75">
+    <div class="sig-name">KR6. VKOSPI 공포지수</div>
+    <div class="sig-status" style="color: #1D9E75">안전</div>
+    <div class="sig-desc">데이터 수집 중</div>
+  </div></div>
+
+  <div class="section-title">차트</div>
+  <div class="chart-grid">
+    <div class="chart"><div id="c_kr_idx" style="height:300px;"></div></div>
+    <div class="chart"><div id="c_kr_vkospi" style="height:300px;"></div></div>
+  </div>
+  <div class="chart"><div id="c_kr_credit" style="height:300px;"></div></div>
+  <div class="chart"><div id="c_kr_forced" style="height:280px;"></div></div>
+  <div class="chart"><div id="c_kr_foreign" style="height:300px;"></div></div>
+  <div class="chart"><div id="c_kr_semi" style="height:280px;"></div></div>
+  <div class="chart"><div id="c_kr_sector" style="height:320px;"></div></div>
+</div>
+
+<div id="pane-us" class="pane">
+  
+      <div class="regime-block">
+        <div class="regime-title">S&P 500 추세 전망</div>
+        <div class="regime-grid">
+        <div class="regime-card" style="border-top-color: #1D9E75;">
+          <div class="regime-name">단기 (1~3개월)</div>
+          <div class="regime-value" style="color: #1D9E75;">강세</div>
+          <div class="regime-score">점수 +2</div>
+          <div class="regime-reasons">· 최근 30일 +5.7% (강한 상승)</div>
+        </div>
+        <div class="regime-card" style="border-top-color: #97C459;">
+          <div class="regime-name">중기 (3~6개월)</div>
+          <div class="regime-value" style="color: #97C459;">약한 강세</div>
+          <div class="regime-score">점수 +1</div>
+          <div class="regime-reasons">· 50일선이 200일선 약간 위</div>
+        </div>
+        <div class="regime-card" style="border-top-color: #1D9E75;">
+          <div class="regime-name">장기 (6~12개월)</div>
+          <div class="regime-value" style="color: #1D9E75;">강세</div>
+          <div class="regime-score">점수 +2</div>
+          <div class="regime-reasons">· 200일선 완만 상승 +1.6%<br>· 52주 고점 근처 (100%)</div>
+        </div></div>
+      </div>
+    
+
+  <div class="section-title">단기 위험 신호 (일간)</div>
+  <div class="overall" style="border-left: 6px solid #BA7517;">
+    <div>
+      <div class="overall-label">미국 위험도 점수</div>
+      <div class="overall-value" style="color: #BA7517;">주의</div>
+    </div>
+    <div style="font-size: 14px; color: #888;">3 / 18점</div>
+  </div>
+
+  <div class="signal-grid">
+  <div class="sig" style="border-color: #BA7517">
+    <div class="sig-name">US1. S&P500 전일 대비</div>
+    <div class="sig-status" style="color: #BA7517">주의</div>
+    <div class="sig-desc">전일 대비 +1.20%</div>
+  </div>
+
+  <div class="sig" style="border-color: #1D9E75">
+    <div class="sig-name">US2. 나스닥-200일선 괴리율</div>
+    <div class="sig-status" style="color: #1D9E75">안전</div>
+    <div class="sig-desc">200일선 대비 +8.7%</div>
+  </div>
+
+  <div class="sig" style="border-color: #1D9E75">
+    <div class="sig-name">US3. VIX 공포지수</div>
+    <div class="sig-status" style="color: #1D9E75">안전</div>
+    <div class="sig-desc">현재 17.5</div>
+  </div>
+
+  <div class="sig" style="border-color: #1D9E75">
+    <div class="sig-name">US4. 엔비디아 전일 대비</div>
+    <div class="sig-status" style="color: #1D9E75">안전</div>
+    <div class="sig-desc">전일 대비 +1.68%</div>
+  </div>
+
+  <div class="sig" style="border-color: #1D9E75">
+    <div class="sig-name">US5. 10년물 국채금리 1주 변화</div>
+    <div class="sig-status" style="color: #1D9E75">안전</div>
+    <div class="sig-desc">현재 4.32% / 1주 변화 +1bp</div>
+  </div>
+
+  <div class="sig" style="border-color: #D85A30">
+    <div class="sig-name">US6. CBOE 1M 내재상관 (COR1M)</div>
+    <div class="sig-status" style="color: #D85A30">경계</div>
+    <div class="sig-desc">현재 10.8 · 극도의 쏠림 — 경계</div>
+  </div></div>
+
+  <div class="section-title">차트</div>
+  <div class="chart-grid">
+    <div class="chart"><div id="c_us_sp" style="height:300px;"></div></div>
+    <div class="chart"><div id="c_us_nasdaq" style="height:300px;"></div></div>
+  </div>
+  <div class="chart-grid">
+    <div class="chart"><div id="c_us_vix" style="height:280px;"></div></div>
+    <div class="chart"><div id="c_us_nvda" style="height:280px;"></div></div>
+  </div>
+  <div class="chart"><div id="c_us_rate" style="height:280px;"></div></div>
+  <div class="chart"><div id="c_us_cor1m" style="height:300px;"></div></div>
+</div>
+
+<div class="footer">
+  데이터: FinanceDataReader, FRED(미국 10Y), data.go.kr/KRX/Investing ·
+  추세 전망은 이동평균·모멘텀·52주 범위 기반 통계 모델 (확정적 예측 아님) ·
+  매일 평일 한국시간 17:30 GitHub Actions로 1회 실행 · 투자 권유 아님
+</div>
+
+<script>
+const D = {"dates": ["2025-11-03", "2025-11-04", "2025-11-05", "2025-11-06", "2025-11-07", "2025-11-10", "2025-11-11", "2025-11-12", "2025-11-13", "2025-11-14", "2025-11-17", "2025-11-18", "2025-11-19", "2025-11-20", "2025-11-21", "2025-11-24", "2025-11-25", "2025-11-26", "2025-11-27", "2025-11-28", "2025-12-01", "2025-12-02", "2025-12-03", "2025-12-04", "2025-12-05", "2025-12-08", "2025-12-09", "2025-12-10", "2025-12-11", "2025-12-12", "2025-12-15", "2025-12-16", "2025-12-17", "2025-12-18", "2025-12-19", "2025-12-22", "2025-12-23", "2025-12-24", "2025-12-25", "2025-12-26", "2025-12-29", "2025-12-30", "2025-12-31", "2026-01-01", "2026-01-02", "2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08", "2026-01-09", "2026-01-12", "2026-01-13", "2026-01-14", "2026-01-15", "2026-01-16", "2026-01-19", "2026-01-20", "2026-01-21", "2026-01-22", "2026-01-23", "2026-01-26", "2026-01-27", "2026-01-28", "2026-01-29", "2026-01-30", "2026-02-02", "2026-02-03", "2026-02-04", "2026-02-05", "2026-02-06", "2026-02-09", "2026-02-10", "2026-02-11", "2026-02-12", "2026-02-13", "2026-02-16", "2026-02-17", "2026-02-18", "2026-02-19", "2026-02-20", "2026-02-23", "2026-02-24", "2026-02-25", "2026-02-26", "2026-02-27", "2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06", "2026-03-09", "2026-03-10", "2026-03-11", "2026-03-12", "2026-03-13", "2026-03-16", "2026-03-17", "2026-03-18", "2026-03-19", "2026-03-20", "2026-03-23", "2026-03-24", "2026-03-25", "2026-03-26", "2026-03-27", "2026-03-30", "2026-03-31", "2026-04-01", "2026-04-02", "2026-04-03", "2026-04-06", "2026-04-07", "2026-04-08", "2026-04-09", "2026-04-10", "2026-04-13", "2026-04-14", "2026-04-15", "2026-04-16", "2026-04-17"], "kospi": [4221.87, 4121.74, 4004.42, 4026.45, 3953.76, 4073.24, 4106.39, 4150.39, 4170.63, 4011.57, 4089.25, 3953.62, 3929.51, 4004.85, 3853.26, 3846.06, 3857.78, 3960.87, 3986.91, 3926.59, 3920.37, 3994.93, 4036.3, 4028.51, 4100.05, 4154.85, 4143.55, 4135.0, 4110.62, 4167.16, 4090.59, 3999.13, 4056.41, 3994.51, 4020.55, 4105.93, 4117.32, 4108.62, null, 4129.68, 4220.56, 4214.17, null, null, 4309.63, 4457.52, 4525.48, 4551.06, 4552.37, 4586.32, 4624.79, 4692.64, 4723.1, 4797.55, 4840.74, 4904.66, 4885.75, 4909.93, 4952.53, 4990.07, 4949.59, 5084.85, 5170.81, 5221.25, 5224.36, 4949.67, 5288.08, 5371.1, 5163.57, 5089.14, 5298.04, 5301.69, 5354.49, 5522.27, 5507.01, null, null, null, 5677.25, 5808.53, 5846.09, 5969.64, 6083.86, 6307.27, 6244.13, null, 5791.91, 5093.54, 5583.9, 5584.87, 5251.87, 5532.59, 5609.95, 5583.25, 5487.24, 5549.85, 5640.48, 5925.03, 5763.22, 5781.2, 5405.75, 5553.92, 5642.21, 5460.46, 5438.87, 5277.3, 5052.46, 5478.7, 5234.05, 5377.3, 5450.33, 5494.78, 5872.34, 5778.01, 5858.87, 5808.62, 5967.75, 6091.39, 6226.05, 6191.92], "kospi_ma200": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], "kosdaq": [914.55, 926.57, 901.89, 898.17, 876.81, 888.35, 884.27, 906.51, 918.37, 897.9, 902.67, 878.7, 871.32, 891.94, 863.95, 856.44, 856.03, 877.32, 880.06, 912.67, 922.38, 928.42, 932.01, 929.83, 924.74, 927.79, 931.35, 935.0, 934.64, 937.34, 938.83, 916.11, 911.07, 901.33, 915.27, 929.14, 919.56, 915.2, null, 919.67, 932.59, 925.47, null, null, 945.57, 957.5, 955.97, 947.39, 944.06, 947.92, 949.81, 948.98, 942.18, 951.16, 954.59, 968.36, 976.37, 951.29, 970.35, 993.93, 1064.41, 1082.59, 1133.52, 1164.41, 1149.44, 1098.36, 1144.33, 1149.43, 1108.41, 1080.77, 1127.55, 1115.2, 1114.87, 1125.99, 1106.08, null, null, null, 1160.71, 1154.0, 1151.99, 1165.0, 1165.25, 1188.15, 1192.78, null, 1137.7, 978.44, 1116.41, 1154.67, 1102.28, 1137.68, 1136.83, 1148.4, 1152.96, 1138.29, 1136.94, 1164.38, 1143.48, 1161.52, 1096.89, 1121.44, 1159.55, 1136.64, 1141.51, 1107.05, 1052.39, 1116.18, 1056.34, 1063.75, 1047.37, 1036.73, 1089.85, 1076.0, 1093.63, 1099.84, 1121.88, 1152.43, 1162.97, 1170.04], "kospi_base100": [100.0, 97.63, 94.85, 95.37, 93.65, 96.48, 97.26, 98.31, 98.79, 95.02, 96.86, 93.65, 93.08, 94.86, 91.27, 91.1, 91.38, 93.82, 94.43, 93.01, 92.86, 94.62, 95.6, 95.42, 97.11, 98.41, 98.14, 97.94, 97.36, 98.7, 96.89, 94.72, 96.08, 94.61, 95.23, 97.25, 97.52, 97.32, 97.32, 97.82, 99.97, 99.82, 99.82, 99.82, 102.08, 105.58, 107.19, 107.8, 107.83, 108.63, 109.54, 111.15, 111.87, 113.64, 114.66, 116.17, 115.72, 116.3, 117.31, 118.2, 117.24, 120.44, 122.48, 123.67, 123.75, 117.24, 125.25, 127.22, 122.31, 120.54, 125.49, 125.58, 126.83, 130.8, 130.44, 130.44, 130.44, 130.44, 134.47, 137.58, 138.47, 141.4, 144.1, 149.4, 147.9, 147.9, 137.19, 120.65, 132.26, 132.28, 124.4, 131.05, 132.88, 132.25, 129.97, 131.45, 133.6, 140.34, 136.51, 136.93, 128.04, 131.55, 133.64, 129.34, 128.83, 125.0, 119.67, 129.77, 123.97, 127.37, 129.1, 130.15, 139.09, 136.86, 138.77, 137.58, 141.35, 144.28, 147.47, 146.66], "samsung_base100": [100.0, 94.42, 90.55, 89.29, 88.12, 90.55, 93.16, 92.8, 92.53, 87.49, 90.55, 88.03, 86.86, 90.55, 85.33, 87.04, 89.38, 92.53, 93.16, 90.46, 90.73, 93.07, 94.06, 94.6, 97.57, 98.56, 97.57, 97.21, 96.58, 98.02, 94.33, 92.53, 97.12, 96.85, 95.68, 99.46, 100.36, 100.0, 100.0, 105.31, 107.56, 107.92, 107.92, 107.92, 115.66, 124.3, 125.02, 126.91, 124.93, 125.11, 124.93, 123.85, 126.28, 129.52, 134.02, 134.38, 130.69, 134.56, 137.08, 136.9, 136.9, 143.56, 146.17, 144.64, 144.46, 135.37, 150.77, 152.21, 143.38, 142.75, 149.77, 149.23, 151.04, 160.76, 163.1, 163.1, 163.1, 163.1, 171.02, 171.11, 173.72, 180.02, 183.17, 196.22, 194.87, 194.87, 175.61, 155.0, 172.46, 169.4, 156.17, 169.13, 171.02, 169.13, 165.17, 169.85, 174.53, 187.67, 180.47, 179.48, 167.69, 170.75, 170.12, 162.11, 161.75, 158.69, 150.5, 170.66, 160.58, 167.6, 173.81, 176.87, 189.47, 183.62, 185.42, 180.92, 185.87, 189.92, 195.77, 194.42], "hynix_base100": [100.0, 94.52, 93.39, 95.65, 93.55, 97.74, 99.84, 99.52, 98.71, 90.32, 97.74, 91.94, 90.65, 92.1, 84.03, 83.87, 83.71, 84.52, 87.74, 85.48, 86.77, 90.0, 89.03, 87.42, 87.74, 93.06, 91.29, 94.68, 91.13, 92.1, 89.35, 85.48, 88.87, 89.03, 88.23, 93.55, 94.19, 94.84, 94.84, 96.61, 103.23, 105.0, 105.0, 105.0, 109.19, 112.26, 117.1, 119.68, 121.94, 120.0, 120.81, 119.03, 119.68, 120.81, 121.94, 123.23, 119.84, 119.35, 121.77, 123.71, 118.71, 129.03, 135.65, 138.87, 146.61, 133.87, 146.29, 145.16, 135.81, 135.32, 143.06, 141.29, 138.71, 143.23, 141.94, 141.94, 141.94, 141.94, 144.19, 153.06, 153.39, 162.1, 164.19, 177.26, 171.13, 171.13, 151.45, 136.94, 151.77, 149.03, 134.84, 151.29, 154.03, 150.0, 146.77, 157.1, 156.45, 170.32, 163.39, 162.42, 150.48, 159.03, 160.48, 150.48, 148.71, 140.81, 130.16, 144.03, 133.87, 141.29, 142.9, 147.74, 166.61, 160.97, 165.65, 167.74, 177.9, 183.23, 186.29, 181.94], "samsung_ret": [3.35, -5.58, -4.1, -1.39, -1.31, 2.76, 2.88, -0.39, -0.29, -5.45, 3.5, -2.78, -1.33, 4.25, -5.77, 2.0, 2.69, 3.52, 0.68, -2.9, 0.3, 2.58, 1.06, 0.57, 3.14, 1.01, -1.0, -0.37, -0.65, 1.49, -3.76, -1.91, 4.96, -0.28, -1.21, 3.95, 0.9, -0.36, 0.0, 5.31, 2.14, 0.33, 0.0, 0.0, 7.17, 7.47, 0.58, 1.51, -1.56, 0.14, -0.14, -0.86, 1.96, 2.57, 3.47, 0.27, -2.75, 2.96, 1.87, -0.13, 0.0, 4.87, 1.82, -1.05, -0.12, -6.29, 11.37, 0.96, -5.8, -0.44, 4.92, -0.36, 1.21, 6.44, 1.46, 0.0, 0.0, 0.0, 4.86, 0.05, 1.53, 3.63, 1.75, 7.13, -0.69, 0.0, -9.88, -11.74, 11.27, -1.77, -7.81, 8.3, 1.12, -1.11, -2.34, 2.83, 2.76, 7.53, -3.84, -0.55, -6.57, 1.83, -0.37, -4.71, -0.22, -1.89, -5.16, 13.4, -5.91, 4.37, 3.71, 1.76, 7.12, -3.09, 0.98, -2.43, 2.74, 2.18, 3.08, -0.69], "hynix_ret": [10.91, -5.48, -1.19, 2.42, -2.19, 4.48, 2.15, -0.32, -0.81, -8.5, 8.21, -5.94, -1.4, 1.6, -8.76, -0.19, -0.19, 0.96, 3.82, -2.57, 1.51, 3.72, -1.08, -1.81, 0.37, 6.07, -1.91, 3.71, -3.75, 1.06, -2.98, -4.33, 3.96, 0.18, -0.91, 6.03, 0.69, 0.68, 0.0, 1.87, 6.84, 1.72, 0.0, 0.0, 3.99, 2.81, 4.31, 2.2, 1.89, -1.59, 0.67, -1.47, 0.54, 0.94, 0.93, 1.06, -2.75, -0.4, 2.03, 1.59, -4.04, 8.7, 5.13, 2.38, 5.57, -8.69, 9.28, -0.77, -6.44, -0.36, 5.72, -1.24, -1.83, 3.26, -0.9, 0.0, 0.0, 0.0, 1.59, 6.15, 0.21, 5.68, 1.29, 7.96, -3.46, 0.0, -11.5, -9.58, 10.84, -1.81, -9.52, 12.2, 1.81, -2.62, -2.15, 7.03, -0.41, 8.87, -4.07, -0.59, -7.35, 5.68, 0.91, -6.23, -1.18, -5.31, -7.56, 10.66, -7.05, 5.54, 1.14, 3.39, 12.77, -3.39, 2.91, 1.27, 6.06, 2.99, 1.67, -2.34], "vkospi": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], "credit": [254618635101.0, 255117506388.0, 258224650615.0, 258781520165.0, 262165468631.0, 261197649526.0, 259917762036.0, 260097656906.0, 262515000587.0, 264033308007.0, 266029433868.0, 267965677791.0, 268358411786.0, 268471198615.0, 267612467574.0, 267617023085.0, 266669856823.0, 264921187692.0, 264440818335.0, 264450646972.0, 265823513198.0, 267990373945.0, 268310124034.0, 268958741952.0, 270763094261.0, 273554665201.0, 273334867239.0, 274064974248.0, 273912149651.0, 273795924788.0, 274187843941.0, 273376872903.0, 275287794098.0, 273445318640.0, 272660213767.0, 272439295554.0, 272651309634.0, 272701097873.0, null, 272475724642.0, 272945095968.0, 272995475282.0, 272864687178.0, null, 274206999892.0, 276223559667.0, 277962608791.0, 278707594502.0, 281902937826.0, 283497451029.0, 285224081558.0, 286574405012.0, 285992928780.0, 287455797091.0, 289337863290.0, 289950138262.0, 290585535080.0, 290821142296.0, 289257447071.0, 290554097956.0, 293466817971.0, 292449959287.0, 295961662811.0, 300924873732.0, 302778510702.0, 304730643798.0, 305397658151.0, 309351800400.0, 307867924777.0, 310994947814.0, 316076977441.0, 315607204230.0, 313180097015.0, 314664101291.0, 314766742107.0, null, null, null, 315932288375.0, 316384481077.0, 317123249509.0, 319602075374.0, 321340399898.0, 323684877613.0, 326689832232.0, null, 328040725277.0, 331977905322.0, 336945205256.0, 327898962930.0, 316905079484.0, 318033167282.0, 317583852171.0, 321419423129.0, 326833621175.0, 332191474148.0, 333316173939.0, 334875886521.0, 333076262241.0, 332550078446.0, 333486181100.0, 334218548253.0, 330285238472.0, 327524160297.0, 327844738702.0, 326017629323.0, 329226153612.0, 329810214997.0, 327255059313.0, 324439830772.0, 328459017320.0, 326576809968.0, 327300052729.0, 327200174770.0, 329014305665.0, 332168177506.0, 332824454992.0, 333566775297.0, null, null], "forced": [133.0, 162.0, 79.0, 218.0, 380.0, 190.0, 195.0, 64.0, 50.0, 103.0, 37.0, 331.0, 106.0, 127.0, 167.0, 113.0, 373.0, 70.0, 41.0, 41.0, 43.0, 88.0, 35.0, 59.0, 50.0, 78.0, 73.0, 76.0, 78.0, 84.0, 72.0, 106.0, 71.0, 152.0, 92.0, 92.0, 50.0, 39.0, 0.0, 45.0, 79.0, 68.0, 23.0, 0.0, 80.0, 82.0, 52.0, 72.0, 74.0, 117.0, 130.0, 122.0, 114.0, 89.0, 149.0, 86.0, 93.0, 83.0, 69.0, 142.0, 119.0, 193.0, 87.0, 84.0, 96.0, 119.0, 159.0, 132.0, 127.0, 93.0, 359.0, 168.0, 80.0, 120.0, 62.0, 0.0, 0.0, 0.0, 94.0, 87.0, 70.0, 96.0, 290.0, 153.0, 76.0, 0.0, 92.0, 224.0, 776.0, 824.0, 354.0, 446.0, 223.0, 194.0, 133.0, 315.0, 98.0, 138.0, 67.0, 81.0, 153.0, 234.0, 236.0, 118.0, 189.0, 237.0, 367.0, 305.0, 90.0, 158.0, 80.0, 196.0, 83.0, 73.0, 80.0, 120.0, 149.0, 124.0, 0.0, 0.0], "foreign": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "sp500": [6851.97, 6771.55, 6796.29, 6720.32, 6728.8, 6832.43, 6846.61, 6850.92, 6737.49, 6734.11, 6672.41, 6617.32, 6642.16, 6538.76, 6602.99, 6705.12, 6765.88, 6812.61, null, 6849.09, 6812.63, 6829.37, 6849.72, 6857.12, 6870.4, 6846.51, 6840.51, 6886.68, 6901.0, 6827.41, 6816.51, 6800.26, 6721.43, 6774.76, 6834.5, 6878.49, 6909.79, 6932.05, null, 6929.94, 6905.74, 6896.24, 6845.5, null, 6858.47, 6902.05, 6944.82, 6920.93, 6921.46, 6966.28, 6977.27, 6963.74, 6926.6, 6944.47, 6940.01, null, 6796.86, 6875.62, 6913.35, 6915.61, 6950.23, 6978.6, 6978.03, 6969.01, 6939.03, 6976.44, 6917.81, 6882.72, 6798.4, 6932.3, 6964.82, 6941.81, 6941.47, 6832.76, 6836.17, null, 6843.22, 6881.31, 6861.89, 6909.51, 6837.75, 6890.07, 6946.13, 6908.86, 6878.88, 6881.62, 6816.63, 6869.5, 6830.71, 6740.02, 6795.99, 6781.48, 6775.8, 6672.62, 6632.19, 6699.38, 6716.09, 6624.7, 6606.49, 6506.48, 6581.0, 6556.37, 6591.9, 6477.16, 6368.85, 6343.72, 6528.52, 6575.32, 6582.69, null, 6611.83, 6616.85, 6782.81, 6824.66, 6816.89, 6886.24, 6967.38, 7022.95, 7041.28, 7126.06], "sp500_ma200": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], "nasdaq": [23834.72, 23348.64, 23499.8, 23053.99, 23004.54, 23527.17, 23468.3, 23406.46, 22870.36, 22900.59, 22708.07, 22432.85, 22564.23, 22078.05, 22273.08, 22872.01, 23025.59, 23214.69, null, 23365.69, 23275.92, 23413.67, 23454.09, 23505.14, 23578.13, 23545.9, 23576.49, 23654.15, 23593.86, 23195.17, 23057.41, 23111.46, 22693.32, 23006.36, 23307.62, 23428.83, 23561.84, 23613.31, null, 23593.1, 23474.35, 23419.08, 23241.99, null, 23235.63, 23395.82, 23547.17, 23584.28, 23480.02, 23671.35, 23733.9, 23709.87, 23471.75, 23530.02, 23515.39, null, 22954.32, 23224.82, 23436.02, 23501.24, 23601.36, 23817.1, 23857.45, 23685.12, 23461.82, 23592.11, 23255.19, 22904.58, 22540.59, 23031.21, 23238.67, 23102.47, 23066.47, 22597.15, 22546.67, null, 22578.38, 22753.63, 22682.73, 22886.07, 22627.27, 22863.68, 23152.08, 22878.38, 22668.21, 22748.86, 22516.69, 22807.48, 22748.99, 22387.68, 22695.95, 22697.1, 22716.13, 22311.98, 22105.36, 22374.18, 22479.53, 22152.42, 22090.69, 21647.61, 21946.76, 21761.89, 21929.82, 21408.08, 20948.36, 20794.64, 21590.63, 21840.95, 21879.18, null, 21996.34, 22017.85, 22634.99, 22822.42, 22902.89, 23183.74, 23639.08, 24016.02, 24102.7, 24468.48], "nasdaq_ma200": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], "vix": [17.17, 19.0, 18.01, 19.5, 19.08, 17.6, 17.28, 17.51, 20.0, 19.83, 22.38, 24.69, 23.66, 26.42, 23.43, 20.52, 18.56, 17.19, null, 16.35, 17.24, 16.59, 16.08, 15.78, 15.41, 16.66, 16.93, 15.77, 14.85, 15.74, 16.5, 16.48, 17.62, 16.87, 14.91, 14.08, 14.0, 13.47, null, 13.6, 14.2, 14.33, 14.95, null, 14.51, 14.9, 14.75, 15.38, 15.45, 14.49, 15.12, 15.98, 16.75, 15.84, 15.86, null, 20.09, 16.9, 15.64, 16.09, 16.15, 16.35, 16.35, 16.88, 17.44, 16.34, 18.0, 18.64, 21.77, 20.37, 17.36, 17.79, 17.65, 20.82, 20.6, null, 20.29, 19.62, 20.23, 19.09, 21.01, 19.55, 17.93, 18.63, 19.86, 21.44, 23.57, 21.15, 23.75, 29.49, 25.5, 24.93, 24.23, 27.29, 27.19, 23.51, 22.37, 25.09, 24.06, 26.78, 26.15, 26.95, 25.33, 27.44, 31.05, 30.61, 25.25, 24.54, 23.87, null, 24.17, 25.78, 21.04, 19.49, 19.23, 19.12, 18.36, 18.17, 17.94, 17.48], "nvda": [206.88, 198.69, 195.21, 188.08, 188.15, 199.05, 193.16, 193.8, 186.86, 190.17, 186.6, 181.36, 186.52, 180.64, 178.88, 182.55, 177.82, 180.26, null, 177.0, 179.92, 181.46, 179.59, 183.38, 182.41, 185.55, 184.97, 183.78, 180.93, 175.02, 176.29, 177.72, 170.94, 174.14, 180.99, 183.69, 189.21, 188.61, null, 190.53, 188.22, 187.54, 186.5, null, 188.85, 188.12, 187.24, 189.11, 185.04, 184.86, 184.94, 185.81, 183.14, 187.05, 186.23, null, 178.07, 183.32, 184.84, 187.67, 186.47, 188.52, 191.52, 192.51, 191.13, 185.61, 180.34, 174.19, 171.88, 185.41, 190.04, 188.54, 190.05, 186.94, 182.81, null, 184.97, 187.98, 187.9, 189.82, 191.55, 192.85, 195.56, 184.89, 177.19, 182.48, 180.05, 183.04, 183.34, 177.82, 182.65, 184.77, 186.03, 183.14, 180.25, 183.22, 181.93, 180.4, 178.56, 172.7, 175.64, 175.2, 178.68, 171.24, 167.52, 165.17, 174.4, 175.75, 177.39, null, 177.64, 178.1, 182.08, 183.91, 188.63, 189.31, 196.51, 198.87, 198.35, 201.68], "ust10y": [4.13, 4.1, 4.17, 4.11, 4.11, 4.13, 4.13, 4.08, 4.11, 4.14, 4.13, 4.12, 4.13, 4.1, 4.06, 4.04, 4.01, 4.0, 4.0, 4.02, 4.09, 4.09, 4.06, 4.11, 4.14, 4.17, 4.18, 4.13, 4.14, 4.19, 4.18, 4.15, 4.16, 4.12, 4.16, 4.17, 4.18, 4.15, 4.15, 4.14, 4.12, 4.14, 4.18, 4.18, 4.19, 4.17, 4.18, 4.15, 4.19, 4.18, 4.19, 4.18, 4.15, 4.17, 4.24, 4.24, 4.3, 4.26, 4.26, 4.24, 4.22, 4.24, 4.26, 4.24, 4.26, 4.29, 4.28, 4.29, 4.21, 4.22, 4.22, 4.16, 4.18, 4.09, 4.04, 4.04, 4.05, 4.09, 4.08, 4.08, 4.03, 4.04, 4.05, 4.02, 3.97, 4.05, 4.06, 4.09, 4.13, 4.15, 4.12, 4.15, 4.21, 4.27, 4.28, 4.23, 4.2, 4.26, 4.25, 4.39, 4.34, 4.39, 4.33, 4.42, 4.44, 4.35, 4.3, 4.33, 4.31, 4.35, 4.34, 4.33, 4.29, 4.29, 4.31, 4.3, 4.26, 4.29, 4.32, null], "cor1m": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 10.84], "sec_반도체": [198.06, 189.82, 183.82, 184.35, 180.13, 186.08, 188.71, 189.08, 189.33, 176.46, 186.0, 175.78, 173.16, 177.92, 166.57, 167.04, 168.3, 173.39, 174.96, 172.98, 174.49, 177.74, 177.57, 174.68, 177.06, 182.34, 180.2, 182.12, 178.91, 180.14, 175.17, 170.07, 177.07, 175.38, 174.27, 184.36, 185.71, 185.02, null, 192.14, 199.68, 200.62, null, null, 213.45, 227.15, 239.56, 237.95, 239.5, 234.29, 232.78, 232.34, 235.96, 239.44, 243.28, 243.57, 236.43, 237.21, 240.17, 242.41, 239.82, 254.06, 268.21, 276.32, 286.15, 261.63, 286.04, 285.98, 271.18, 271.87, 282.35, 277.99, 274.71, 287.85, 286.16, null, null, null, 294.87, 301.04, 302.8, 310.69, 315.21, 351.16, 360.88, null, 322.9, 290.18, 332.5, 336.73, 307.25, 333.68, 331.56, 328.52, 320.25, 329.96, 332.31, 357.66, 349.13, 348.16, 327.78, 335.27, 337.94, 316.36, 313.67, 299.85, 283.12, 313.5, 292.43, 303.79, 305.53, 311.22, 343.41, 336.66, 341.88, 334.76, 348.23, 357.37, 363.24, 358.0], "sec_방산조선": [182.34, 176.26, 163.3, 162.99, 155.05, 160.39, 157.63, 157.69, 161.97, 162.9, 167.3, 161.95, 157.92, 160.64, 153.58, 151.77, 148.78, 150.68, 149.02, 145.57, 140.22, 141.08, 145.36, 143.23, 146.32, 151.74, 155.9, 152.62, 150.25, 154.74, 151.11, 145.3, 145.25, 141.54, 149.13, 148.88, 155.46, 151.77, null, 148.62, 155.05, 152.03, null, null, 153.8, 160.67, 167.11, 167.22, 178.77, 188.03, 192.98, 201.19, 194.33, 198.87, 195.77, 201.35, 199.08, 195.96, 191.0, 191.71, 190.07, 186.22, 190.48, 190.39, 184.24, 175.77, 184.12, 186.48, 174.33, 169.4, 172.7, 170.91, 169.86, 170.59, 169.72, null, null, null, 177.75, 188.66, 188.21, 188.96, 186.3, 184.27, 186.16, null, 205.44, 182.17, 205.82, 216.99, 212.65, 210.87, 211.38, 216.73, 214.07, 211.52, 206.97, 205.62, 203.4, 196.74, 185.22, 189.65, 201.8, 200.13, 197.03, 188.42, 178.94, 199.73, 198.23, 212.52, 205.31, 209.53, 211.64, 212.78, 218.21, 218.58, 220.53, 216.52, 219.58, 216.53], "sec_바이오": [106.75, 107.64, 106.45, 109.25, 106.88, 106.34, 106.17, 110.94, 109.33, 109.07, 107.95, 107.17, 106.03, 107.1, 105.25, 104.47, 100.63, 101.95, 102.75, 104.05, 104.77, 103.4, 103.41, 103.54, 99.04, 98.86, 99.14, 98.79, 99.0, 98.65, 100.64, 99.39, 97.89, 97.72, 100.72, 101.57, 100.94, 100.36, null, 99.74, 100.44, 99.99, null, null, 104.57, 106.56, 108.21, 105.59, 108.87, 111.0, 107.72, 109.66, 107.77, 108.74, 111.33, 109.23, 108.33, 99.68, 98.52, 101.27, 104.22, 104.54, 108.48, 108.34, 102.1, 99.0, 101.43, 101.9, 100.87, 98.96, 103.76, 102.66, 104.47, 104.74, 103.83, null, null, null, 107.44, 107.04, 106.9, 107.8, 106.26, 106.5, 106.49, null, 100.57, 88.3, 96.25, 96.4, 93.46, 94.91, 95.3, 96.39, 94.4, 93.17, 94.49, 96.59, 95.63, 94.26, 88.78, 92.38, 93.9, 95.02, 95.78, 91.99, 89.44, 94.23, 91.59, 91.51, 90.96, 90.73, 94.34, 93.96, 94.31, 92.2, 93.04, 96.74, 97.72, 96.24], "sec_2차전지": [146.53, 147.95, 143.45, 143.55, 139.61, 143.46, 145.58, 145.85, 151.05, 144.82, 144.41, 138.11, 137.4, 138.24, 132.29, 128.91, 129.93, 139.13, 138.81, 133.45, 133.48, 134.55, 135.77, 133.77, 136.64, 140.55, 138.6, 138.94, 136.07, 136.98, 135.62, 130.27, 131.49, 121.82, 122.98, 125.13, 124.5, 124.68, null, 121.85, 122.28, 119.38, null, null, 116.49, 120.3, 121.53, 118.35, 117.7, 116.19, 120.32, 127.24, 123.36, 125.65, 124.55, 129.04, 131.68, 129.29, 142.41, 141.15, 142.92, 141.32, 144.7, 142.27, 137.32, 128.93, 133.81, 138.81, 136.24, 131.86, 135.28, 136.65, 136.71, 141.27, 136.88, null, null, null, 143.99, 145.01, 142.86, 151.83, 157.17, 159.43, 164.24, null, 148.39, 127.31, 139.89, 142.66, 134.28, 138.28, 138.44, 138.93, 133.54, 131.42, 135.32, 139.68, 135.84, 137.31, 128.87, 137.92, 140.09, 137.4, 139.28, 142.75, 137.59, 144.3, 144.63, 144.36, 149.73, 150.26, 154.08, 158.18, 157.43, 154.26, 153.39, 155.42, 158.34, 163.92], "sec_금융": [153.54, 158.17, 156.66, 163.45, 160.14, 165.12, 163.62, 169.69, 168.84, 165.9, 163.27, 158.79, 160.15, 159.46, 158.87, 157.57, 159.13, 162.41, 161.79, 162.68, 165.95, 172.32, 170.08, 167.49, 169.6, 166.3, 165.34, 163.05, 162.96, 164.4, 162.98, 161.96, 163.23, 162.1, 163.92, 166.85, 164.69, 166.69, null, 164.9, 166.2, 164.64, null, null, 163.82, 166.36, 167.95, 165.15, 162.5, 164.15, 164.79, 166.52, 168.53, 168.6, 168.68, 167.88, 173.26, 174.55, 175.49, 177.28, 176.46, 184.18, 179.63, 181.15, 178.04, 177.67, 187.05, 191.49, 191.42, 197.09, 202.67, 209.49, 219.01, 226.84, 223.43, null, null, null, 221.94, 227.86, 226.03, 221.78, 221.14, 218.34, 210.52, null, 206.85, 185.96, 197.22, 194.64, 187.97, 191.57, 197.26, 195.33, 192.67, 191.68, 194.5, 201.17, 201.93, 203.0, 189.04, 190.75, 194.7, 196.66, 198.0, 191.23, 187.55, 196.56, 193.02, 192.07, 195.27, 192.71, 203.44, 202.35, 207.44, 206.88, 208.32, 210.54, 212.96, 213.29], "sp500_range": [6312.4264, 7157.3536], "nasdaq_range": [20647.6864, 24615.4336]};
+const base = {
+  margin: {t: 30, r: 45, b: 35, l: 50}, font: {family: 'system-ui'},
+  paper_bgcolor: 'white', plot_bgcolor: 'white',
+  legend: {orientation: 'h', y: -0.2}
+};
+
+function plot(id, traces, title, extra) {
+  if (!D.dates.length) {
+    document.getElementById(id).innerHTML = '<p style="text-align:center;color:#888;padding:40px;">데이터 대기</p>';
+    return;
+  }
+  Plotly.newPlot(id, traces, {...base, title: {text: title, font: {size: 13}}, ...(extra || {})});
+}
+
+plot('c_kr_idx', [
+  {x: D.dates, y: D.kospi, type: 'scatter', mode: 'lines', name: '코스피', line: {color: '#185FA5', width: 2}},
+  {x: D.dates, y: D.kospi_ma200, type: 'scatter', mode: 'lines', name: '200일선', line: {color: '#A32D2D', width: 1.5, dash: 'dash'}},
+  {x: D.dates, y: D.kosdaq, type: 'scatter', mode: 'lines', name: '코스닥', yaxis: 'y2', line: {color: '#534AB7', width: 2}}
+], '코스피 + 200일선 & 코스닥', {yaxis: {title: '코스피'}, yaxis2: {title: '코스닥', overlaying: 'y', side: 'right'}});
+
+plot('c_kr_vkospi', [
+  {x: D.dates, y: D.vkospi, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VKOSPI',
+    line: {color: '#A32D2D'}, fillcolor: 'rgba(163,45,45,0.1)'}
+], 'VKOSPI 공포지수', {
+  shapes: [
+    {type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 20, y1: 20, line: {color: '#BA7517', width: 1, dash: 'dot'}},
+    {type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 30, y1: 30, line: {color: '#A32D2D', width: 1, dash: 'dot'}}
+  ]
+});
+
+plot('c_kr_credit', [
+  {x: D.dates, y: D.kospi, type: 'scatter', mode: 'lines', name: '코스피', line: {color: '#185FA5', width: 2}},
+  {x: D.dates, y: D.credit, type: 'scatter', mode: 'lines', name: '신용잔고(억)', yaxis: 'y2', line: {color: '#993C1D', width: 2, dash: 'dash'}}
+], '코스피 vs 신용잔고', {yaxis: {title: '코스피'}, yaxis2: {title: '잔고(억)', overlaying: 'y', side: 'right'}});
+
+plot('c_kr_forced', [{
+  x: D.dates, y: D.forced, type: 'bar', name: '반대매매(억)',
+  marker: {color: D.forced.map(v => v >= 600 ? '#A32D2D' : v >= 400 ? '#D85A30' : v >= 200 ? '#BA7517' : '#888')}
+}], '일일 반대매매');
+
+plot('c_kr_foreign', [{
+  x: D.dates, y: D.foreign, type: 'bar', name: '외국인(억)',
+  marker: {color: D.foreign.map(v => v < 0 ? '#A32D2D' : '#1D9E75')}
+}], '외국인 일별 순매수/매도 (코스피+코스닥)');
+
+plot('c_kr_semi', [
+  {x: D.dates, y: D.kospi_base100, type: 'scatter', mode: 'lines', name: '코스피', line: {color: '#888', width: 1, dash: 'dot'}},
+  {x: D.dates, y: D.samsung_base100, type: 'scatter', mode: 'lines', name: '삼성전자', line: {color: '#185FA5', width: 2}},
+  {x: D.dates, y: D.hynix_base100, type: 'scatter', mode: 'lines', name: 'SK하이닉스', line: {color: '#534AB7', width: 2}}
+], '반도체 누적 추세 (Base 100)');
+
+plot('c_kr_sector', [
+  {x: D.dates, y: D.sec_반도체, type: 'scatter', mode: 'lines', name: '반도체', line: {color: '#185FA5'}},
+  {x: D.dates, y: D.sec_방산조선, type: 'scatter', mode: 'lines', name: '방산조선', line: {color: '#534AB7'}},
+  {x: D.dates, y: D.sec_바이오, type: 'scatter', mode: 'lines', name: '바이오', line: {color: '#1D9E75'}},
+  {x: D.dates, y: D.sec_2차전지, type: 'scatter', mode: 'lines', name: '2차전지', line: {color: '#BA7517'}},
+  {x: D.dates, y: D.sec_금융, type: 'scatter', mode: 'lines', name: '금융', line: {color: '#888'}}
+], '업종 바구니 누적 추세 (Base 100)');
+
+plot('c_us_sp', [
+  {x: D.dates, y: D.sp500, type: 'scatter', mode: 'lines', name: 'S&P 500', line: {color: '#185FA5', width: 2}},
+  {x: D.dates, y: D.sp500_ma200, type: 'scatter', mode: 'lines', name: '200일선', line: {color: '#A32D2D', width: 1.5, dash: 'dash'}}
+], 'S&P 500 + 200일선', D.sp500_range ? {yaxis: {range: D.sp500_range}} : undefined);
+
+plot('c_us_nasdaq', [
+  {x: D.dates, y: D.nasdaq, type: 'scatter', mode: 'lines', name: '나스닥', line: {color: '#534AB7', width: 2}},
+  {x: D.dates, y: D.nasdaq_ma200, type: 'scatter', mode: 'lines', name: '200일선', line: {color: '#A32D2D', width: 1.5, dash: 'dash'}}
+], '나스닥 + 200일선', D.nasdaq_range ? {yaxis: {range: D.nasdaq_range}} : undefined);
+
+plot('c_us_vix', [
+  {x: D.dates, y: D.vix, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VIX',
+    line: {color: '#A32D2D'}, fillcolor: 'rgba(163,45,45,0.1)'}
+], 'VIX 공포지수');
+
+plot('c_us_nvda', [
+  {x: D.dates, y: D.nvda, type: 'scatter', mode: 'lines', name: 'NVDA', line: {color: '#1D9E75', width: 2}}
+], '엔비디아');
+
+plot('c_us_rate', [
+  {x: D.dates, y: D.ust10y, type: 'scatter', mode: 'lines', name: '10Y', line: {color: '#BA7517', width: 2}}
+], '미국 10년물 국채금리 (%)');
+
+plot('c_us_cor1m', [
+  {x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'COR1M',
+    line: {color: '#534AB7', width: 2}, fillcolor: 'rgba(83,74,183,0.08)'}
+], 'CBOE 1개월 내재상관 (COR1M) — 낮을수록 쏠림, 높을수록 시스템 공포', {
+  shapes: [
+    {type: 'rect', xref: 'paper', x0: 0, x1: 1, y0: 60, y1: 100,
+      fillcolor: 'rgba(163,45,45,0.08)', line: {width: 0}},
+    {type: 'rect', xref: 'paper', x0: 0, x1: 1, y0: 0, y1: 15,
+      fillcolor: 'rgba(186,117,23,0.10)', line: {width: 0}},
+    {type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 60, y1: 60,
+      line: {color: '#A32D2D', width: 1, dash: 'dot'}},
+    {type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 20, y1: 20,
+      line: {color: '#1D9E75', width: 1, dash: 'dot'}},
+    {type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 15, y1: 15,
+      line: {color: '#BA7517', width: 1, dash: 'dot'}}
+  ],
+  annotations: [
+    {xref: 'paper', yref: 'y', x: 0.02, y: 62, text: '시스템 공포 (60+)', showarrow: false,
+      font: {size: 10, color: '#A32D2D'}, xanchor: 'left'},
+    {xref: 'paper', yref: 'y', x: 0.02, y: 12, text: '쏠림 극한 (&lt;15)', showarrow: false,
+      font: {size: 10, color: '#BA7517'}, xanchor: 'left'}
+  ]
+});
+
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', e => {
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+  document.querySelectorAll('.pane').forEach(x => x.classList.remove('active'));
+  e.target.classList.add('active');
+  document.getElementById('pane-' + e.target.dataset.tab).classList.add('active');
+  setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
+}));
+</script>
+</body>
+</html>
