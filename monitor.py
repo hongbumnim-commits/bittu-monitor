@@ -2082,11 +2082,11 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
       .map(t => ({name: t.name, key: (Object.keys(labelMap).find(k => labelMap[k] === t.name) || null), last: [...t.y].reverse().find(v => v !== null && v !== undefined)}))
       .filter(x => x.last !== undefined)
       .sort((a,b) => b.last - a.last);
-    const rankText = ranking.map((x,i) => {
+    const rankText = ranking.map((x,i) => {{
       const c = colorMap[x.key] || '#333';
-      return `<span style="color:${c};font-weight:700">${i+1}위 ${x.name} ${x.last.toFixed(1)}</span>`;
-    }).join('<br>');
-    Plotly.newPlot(id, traces, Object.assign({}, base, {
+      return '<span style="color:' + c + ';font-weight:700">' + (i+1) + '위 ' + x.name + ' ' + x.last.toFixed(1) + '</span>';
+    }}).join('<br>');
+    Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
       title: {{text: 'M7 + 브로드컴 + TSMC + 나스닥 종합지수(IXIC) vs S&P500 누적 추세 (Base 100)', font: {{size: 14}}}},
       yaxis: {{title: 'Base 100'}},
       legend: {{orientation: 'h', y: -0.08, x: 0, xanchor: 'left'}},
