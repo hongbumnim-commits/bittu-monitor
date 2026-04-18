@@ -553,38 +553,21 @@ def fetch_krx_vkospi(days=LOOKBACK_DAYS):
 def fetch_fdr_vkospi():
     """
     VKOSPI 지수 조회. 여러 소스 순차 시도 + 값 검증.
-    VKOSPI 정상 범위는 5~100 (실제로는 보통 10~60). 이 범위 밖이면 잘못된 데이터로 판단.
+    VKOSPI 정상 범위는 5~200 (2026년 중동전쟁 시 80+ 기록).
+    FDR의 KSVKOSPI는 가끔 코스피 값을 반환하는 버그 있음 → 400 초과시 거절.
     """
     import urllib.parse
 
     cutoff = TODAY - dt.timedelta(days=LOOKBACK_DAYS)
-    candidates = []
 
-    # 1) FDR 여러 심볼 시도
-    for symbol in ["KSVKOSPI", "^KSVKOSPI", "^VKOSPI"]:
-        try:
-            df = fdr.DataReader(symbol)
-            if df is None or df.empty:
-                continue
-            s = df["Close"] if "Close" in df.columns else df.iloc[:, 0]
-            s = s.dropna()
-            if s.empty:
-                continue
-            last = float(s.iloc[-1])
-            if not (5 <= last <= 100):
-                print(f"  [warn] fdr {symbol} out of range ({last:.2f}), skip")
-                continue
-            s.index = pd.to_datetime(s.index).date
-            s = s[s.index >= cutoff]
-            print(f"  vkospi via fdr ({symbol}): {len(s)} rows, latest {last:.2f}")
-            return s.rename("vkospi")
-        except Exception as e:
-            print(f"  [warn] fdr {symbol}: {e}")
-
-    # 2) Yahoo Finance chart API 직접 호출
+    # 1) FDR 여러 심볼 시도 — KSVKOSPI는 코스피 값 반환 버그 있어서 skip
+    #    우선 Yahoo 직접 호출로 가고, FDR은 fallback
     end_ts = int(dt.datetime.now(KST).timestamp())
     start_ts = end_ts - LOOKBACK_DAYS * 86400
-    for symbol in ["^KSVKOSPI", "^VKOSPI"]:
+
+    # 2) Yahoo Finance chart API 직접 호출 — 가장 신뢰도 높음
+    yahoo_symbols = ["^VKOSPI", "^KSVKOSPI"]
+    for symbol in yahoo_symbols:
         try:
             url = (f"https://query1.finance.yahoo.com/v8/finance/chart/"
                    f"{urllib.parse.quote(symbol)}"
@@ -597,17 +580,22 @@ def fetch_fdr_vkospi():
                 "Referer": "https://finance.yahoo.com/",
             }
             r = requests.get(url, headers=headers, timeout=20)
-            r.raise_for_status()
+            if r.status_code != 200:
+                continue
             data = r.json()
             result = data["chart"]["result"][0]
-            timestamps = result["timestamp"]
-            closes = result["indicators"]["quote"][0]["close"]
+            timestamps = result.get("timestamp", [])
+            closes = result["indicators"]["quote"][0].get("close", [])
+            if not timestamps or not closes:
+                continue
             dates = [dt.datetime.fromtimestamp(t, tz=dt.timezone.utc).date() for t in timestamps]
             s = pd.Series(closes, index=dates, name="vkospi").dropna()
             if s.empty:
                 continue
             last = float(s.iloc[-1])
-            if 5 <= last <= 100:
+            # 유효 범위 대폭 확대: VKOSPI는 이론상 5~200 (2026년 80+ 도달 사례)
+            # 400 이상이면 확실히 코스피 혼선
+            if 3 <= last <= 200:
                 print(f"  vkospi via yahoo ({symbol}): {len(s)} rows, latest {last:.2f}")
                 return s
             else:
@@ -615,11 +603,36 @@ def fetch_fdr_vkospi():
         except Exception as e:
             print(f"  [warn] yahoo vkospi {symbol}: {e}")
 
-    s = fetch_investing_history("https://www.investing.com/indices/kospi-volatility-historical-data", "vkospi")
-    if not s.empty:
-        last = float(s.iloc[-1])
-        if 5 <= last <= 100:
-            return s
+    # 3) FDR fallback
+    for symbol in ["VKOSPI", "^VKOSPI"]:
+        try:
+            df = fdr.DataReader(symbol)
+            if df is None or df.empty:
+                continue
+            s = df["Close"] if "Close" in df.columns else df.iloc[:, 0]
+            s = s.dropna()
+            if s.empty:
+                continue
+            last = float(s.iloc[-1])
+            if not (3 <= last <= 200):
+                print(f"  [warn] fdr {symbol} out of range ({last:.2f}), skip")
+                continue
+            s.index = pd.to_datetime(s.index).date
+            s = s[s.index >= cutoff]
+            print(f"  vkospi via fdr ({symbol}): {len(s)} rows, latest {last:.2f}")
+            return s.rename("vkospi")
+        except Exception as e:
+            print(f"  [warn] fdr {symbol}: {e}")
+
+    # 4) Investing.com fallback
+    try:
+        s = fetch_investing_history("https://www.investing.com/indices/kospi-volatility-historical-data", "vkospi")
+        if not s.empty:
+            last = float(s.iloc[-1])
+            if 3 <= last <= 200:
+                return s
+    except Exception as e:
+        print(f"  [info] investing vkospi: {e}")
 
     print(f"  [warn] vkospi: all sources failed")
     return pd.Series(dtype=float, name="vkospi")
@@ -1651,7 +1664,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     kosdaq = series_connected("kosdaq", min_val=300, max_daily_jump_pct=20)
     sp500 = series_connected("sp500", min_val=1000, max_daily_jump_pct=20)
     nasdaq = series_connected("nasdaq", min_val=1000, max_daily_jump_pct=20)
-    vkospi = series_connected("vkospi", min_val=5, max_val=100, max_daily_jump_pct=60)
+    vkospi = series_connected("vkospi", min_val=3, max_val=200, max_daily_jump_pct=80)
     cor1m = series_connected("cor1m", min_val=1, max_val=100, max_daily_jump_pct=60)
 
     js_data = {
@@ -1934,10 +1947,11 @@ safePlot('c_kr_rel', [
 ], '코스피 vs 코스닥 상대 추세 (Base 100)', {{yaxis: {{title: 'Base 100'}}}});
 
 safePlot('c_kr_vkospi', [
-  {{x: D.dates, y: D.vkospi, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VKOSPI', connectgaps: false, line: {{color: '#A32D2D', width: 2.2}}, fillcolor: 'rgba(163,45,45,0.10)'}}
-], 'VKOSPI 공포지수', {{yaxis: {{title: 'VKOSPI', range: [0, 40]}}, shapes: [
+  {{x: D.dates, y: D.vkospi, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VKOSPI', connectgaps: true, line: {{color: '#A32D2D', width: 2.2}}, fillcolor: 'rgba(163,45,45,0.10)'}}
+], 'VKOSPI 공포지수', {{yaxis: {{title: 'VKOSPI', range: [0, 80]}}, shapes: [
   {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 20, y1: 20, line: {{color: '#BA7517', width: 1, dash: 'dot'}}}},
-  {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 30, y1: 30, line: {{color: '#A32D2D', width: 1, dash: 'dot'}}}}
+  {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 30, y1: 30, line: {{color: '#A32D2D', width: 1, dash: 'dot'}}}},
+  {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 40, y1: 40, line: {{color: '#A32D2D', width: 1.5, dash: 'dash'}}}}
 ]}});
 
 safePlot('c_kr_kospi_abs', [
@@ -2093,26 +2107,28 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
       .filter(x => x.last !== undefined && x.last !== null)
       .sort((a, b) => b.last - a.last);
 
-    // 랭킹 박스: 왼쪽 상단, 각 줄 색은 해당 라인 색과 일치
-    const lineHeight = 0.035;  // 줄 간격 (paper 좌표)
+    // 랭킹 박스: shapes로 배경 + annotations로 텍스트
+    const lineHeight = 0.040;  // 줄 간격 (paper 좌표)
     const boxTop = 0.985;
     const boxLeft = 0.012;
-    const rankAnnotations = [];
+    const boxPadV = 0.012;  // 위아래 여백
+    const boxWidth = 0.22;  // 박스 너비 (paper 좌표)
 
-    // 1) 배경 박스 (투명 흰색)
-    rankAnnotations.push({{
+    // 박스 shape (배경) — 11줄 전부 감싸도록 동적 높이
+    const rankShape = {{
+      type: 'rect',
       xref: 'paper', yref: 'paper',
-      x: boxLeft - 0.003, y: boxTop + 0.012,
-      xanchor: 'left', yanchor: 'top',
-      text: '', showarrow: false,
-      width: 210,
-      height: (ranking.length * lineHeight * 100) + 18,
-      bgcolor: 'rgba(255,255,255,0.94)',
-      bordercolor: '#D1D5DB', borderwidth: 1,
-      borderpad: 6
-    }});
+      x0: boxLeft - 0.005,
+      x1: boxLeft + boxWidth,
+      y0: boxTop - (ranking.length - 1) * lineHeight - boxPadV - 0.008,
+      y1: boxTop + boxPadV,
+      fillcolor: 'rgba(255,255,255,0.95)',
+      line: {{color: '#D1D5DB', width: 1}},
+      layer: 'above'
+    }};
 
-    // 2) 각 순위 텍스트 (색 = 라인 색과 정확히 일치, 크기 15)
+    // 각 순위 텍스트 (색 = 라인 색과 정확히 일치)
+    const rankAnnotations = [];
     ranking.forEach((x, i) => {{
       const color = colorMap[x.key] || '#333';
       rankAnnotations.push({{
@@ -2132,6 +2148,7 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
       legend: {{orientation: 'h', y: -0.08, x: 0.5, xanchor: 'center', font: {{size: 12}}}},
       margin: {{t: 60, r: 40, b: 90, l: 60}},
       annotations: rankAnnotations,
+      shapes: [rankShape],
       hovermode: 'x unified'
     }}), {{displayModeBar: false, responsive: true}});
   }} catch (e) {{ console.error('m7 plot:', e); showEmpty(id); }}
