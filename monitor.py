@@ -24,6 +24,9 @@ DOCS_DIR.mkdir(parents=True, exist_ok=True)
 KST = dt.timezone(dt.timedelta(hours=9))
 TODAY = dt.datetime.now(KST).date()
 LOOKBACK_DAYS = 400
+ENABLE_BLOCKED_WEB_SOURCES = os.environ.get("MONITOR_ENABLE_BLOCKED_WEB_SOURCES", "").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 
 SECTOR_BASKETS = {
     "반도체":   ["005930", "000660", "042700", "403870"],
@@ -44,6 +47,57 @@ INDEX_GO_KR_FOREIGN_HOLDING_TABLE_URL = (
     "https://www.index.go.kr/unity/potal/eNara/sub/showStblGams3.do"
     "?freq=Y&idx_cd=1086&period=N&stts_cd=108601"
 )
+
+VKOSPI_DATA_GO_KR_ATTEMPTS = [
+    ("getDerivativesMarketIndex", None, "VKOSPI"),
+    ("getDerivativesMarketIndex", None, "코스피 200 변동성"),
+    ("getDerivativesMarketIndex", None, "코스피200 변동성"),
+    ("getDerivativeMarketIndex", None, "VKOSPI"),
+    ("getDerivativeMarketIndex", None, "코스피 200 변동성"),
+    ("getDerivativeMarketIndex", None, "코스피200 변동성"),
+    ("getStockMarketIndex", None, "VKOSPI"),
+    ("getStockMarketIndex", None, "코스피 200 변동성"),
+    ("getStockMarketIndex", None, "코스피200 변동성"),
+    ("getBondMarketIndex", None, "VKOSPI"),
+]
+
+def fetch_stooq_series(symbol, name=None, days=LOOKBACK_DAYS):
+    """Stooq CSV fallback. 예: usdjpy -> USD/JPY"""
+    from io import StringIO
+    if not ENABLE_BLOCKED_WEB_SOURCES:
+        return pd.Series(dtype=float, name=name or symbol)
+    urls = [
+        f"https://stooq.com/q/d/l/?s={symbol}&i=d",
+        f"https://stooq.com/q/d/l/?s={symbol}&d1={(TODAY - dt.timedelta(days=days)).strftime('%Y%m%d')}&d2={TODAY.strftime('%Y%m%d')}&i=d",
+    ]
+    headers = {"User-Agent": "Mozilla/5.0", "Accept-Language": "en-US,en;q=0.9"}
+    for url in urls:
+        try:
+            r = requests.get(url, headers=headers, timeout=20)
+            if r.status_code != 200 or len(r.text) < 20:
+                continue
+            text = r.text.strip()
+            if "Date" not in text[:40]:
+                continue
+            df = pd.read_csv(StringIO(text))
+            if df.empty or "Date" not in df.columns or "Close" not in df.columns:
+                continue
+            df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+            df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
+            df = df.dropna(subset=["Date", "Close"])
+            if df.empty:
+                continue
+            cutoff = TODAY - dt.timedelta(days=days)
+            df = df[df["Date"].dt.date >= cutoff]
+            if df.empty:
+                continue
+            s = pd.Series(df["Close"].values, index=df["Date"].dt.date, name=name or symbol)
+            print(f"  {name or symbol} via stooq: {len(s)} rows, latest {float(s.iloc[-1]):.2f}")
+            return s
+        except Exception as e:
+            print(f"  [warn] stooq {symbol}: {e}")
+    return pd.Series(dtype=float, name=name or symbol)
+
 
 def fetch_fred_series(series_id, name=None, days=LOOKBACK_DAYS * 3):
     start = (TODAY - dt.timedelta(days=days)).strftime("%Y-%m-%d")
@@ -66,16 +120,22 @@ def fetch_usdjpy_series(days=LOOKBACK_DAYS * 3):
     usdjpy = fetch_fred_series("DEXJPUS", "usdjpy", days=days)
     if not usdjpy.empty:
         return usdjpy
+
+    if not ENABLE_BLOCKED_WEB_SOURCES:
+        return pd.Series(dtype=float, name="usdjpy")
+
+    usdjpy = fetch_stooq_series("usdjpy", "usdjpy", days=days)
+    if not usdjpy.empty:
+        return usdjpy
+
+    for sym in ["USDJPY", "JPY=X"]:
+        try:
+            s = fetch_fdr(sym, "usdjpy", days=days)
+            if not s.empty:
+                return s.rename("usdjpy")
+        except Exception:
+            pass
     return pd.Series(dtype=float, name="usdjpy")
-
-
-def fetch_usdkrw_series(days=LOOKBACK_DAYS):
-    """원달러 환율 - FRED DEXKOUS (KRW per USD, 일별)."""
-    s = fetch_fred_series("DEXKOUS", "usdkrw", days=days * 2)
-    if not s.empty:
-        latest = float(s.iloc[-1])
-        print(f"  usdkrw (fred): {len(s)} rows, latest {latest:.1f}")
-    return s
 
 
 def fetch_global_liquidity_proxy():
@@ -290,6 +350,7 @@ def fetch_cor1m():
     return pd.Series(dtype=float, name="cor1m")
 
 
+
 def fetch_investing_history(url, name, days=LOOKBACK_DAYS):
     """Investing.com historical page fallback scraper."""
     headers = {
@@ -326,6 +387,763 @@ def fetch_investing_history(url, name, days=LOOKBACK_DAYS):
     except Exception as e:
         print(f"  [warn] investing {name}: {e}")
     return pd.Series(dtype=float, name=name)
+
+def fetch_naver_deposit():
+    if not ENABLE_BLOCKED_WEB_SOURCES:
+        return {"credit_balance_eok": None, "forced_sale_eok": None}
+    url = "https://finance.naver.com/sise/sise_deposit.naver"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    r = requests.get(url, headers=headers, timeout=20)
+    r.encoding = "euc-kr"
+    result = {"credit_balance_eok": None, "forced_sale_eok": None}
+    try:
+        tables = pd.read_html(r.text, encoding="euc-kr")
+        for t in tables:
+            t_str = t.astype(str)
+            flat = " ".join([" ".join(row) for row in t_str.values.tolist()])
+            if ("신용잔고" in flat or "신용공여" in flat) and result["credit_balance_eok"] is None:
+                for row in t_str.values.tolist():
+                    if "신용" in " ".join(row):
+                        for cell in row:
+                            m = re.search(r"([\d,]+)", str(cell))
+                            if m:
+                                v = int(m.group(1).replace(",", ""))
+                                if v > 100000:
+                                    result["credit_balance_eok"] = v
+                                    break
+                        if result["credit_balance_eok"]:
+                            break
+            if "반대매매" in flat and result["forced_sale_eok"] is None:
+                for row in t_str.values.tolist():
+                    if "반대매매" in " ".join(row):
+                        for cell in row:
+                            m = re.search(r"([\d,]+)", str(cell))
+                            if m:
+                                try:
+                                    v = int(m.group(1).replace(",", ""))
+                                    if 10 <= v <= 100000:
+                                        result["forced_sale_eok"] = v
+                                        break
+                                except ValueError:
+                                    continue
+                        if result["forced_sale_eok"]:
+                            break
+    except Exception as e:
+        print(f"  [warn] deposit read_html: {e}")
+    if result["credit_balance_eok"] is None or result["forced_sale_eok"] is None:
+        try:
+            text = BeautifulSoup(r.text, "html.parser").get_text(" ", strip=True)
+            if result["credit_balance_eok"] is None:
+                m = re.search(r"신용잔고[^\d]*([\d,]+)", text)
+                if m:
+                    v = int(m.group(1).replace(",", ""))
+                    if v > 100000:
+                        result["credit_balance_eok"] = v
+            if result["forced_sale_eok"] is None:
+                m = re.search(r"반대매매[^\d]*([\d,]+)", text)
+                if m:
+                    v = int(m.group(1).replace(",", ""))
+                    if 10 <= v <= 100000:
+                        result["forced_sale_eok"] = v
+        except Exception as e:
+            print(f"  [warn] deposit regex: {e}")
+    print(f"  naver deposit: credit={result['credit_balance_eok']}, forced={result['forced_sale_eok']}")
+    return result
+
+
+def fetch_krx_foreign_investor_flow(days=LOOKBACK_DAYS):
+    """
+    KRX data.krx.co.kr JSON API로 외국인 순매수 일별 데이터 받기.
+    2026-04 기준 비로그인 요청은 LOGOUT 응답을 반환하므로 이를 감지해 조용히 중단한다.
+    
+    URL: https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/standard/MDCSTAT02202 (투자자별 거래실적)
+    
+    Returns: {date: foreign_net_eok}
+    """
+    url = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
+    landing_url = "https://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC0201020203"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "Origin": "https://data.krx.co.kr",
+        "Referer": landing_url,
+        "X-Requested-With": "XMLHttpRequest",
+    }
+    today = dt.date.today()
+    start = today - dt.timedelta(days=days)
+    end_str = today.strftime("%Y%m%d")
+    start_str = start.strftime("%Y%m%d")
+
+    result = {}
+    session = requests.Session()
+    try:
+        landing = session.get(
+            landing_url,
+            headers={"User-Agent": headers["User-Agent"], "Accept-Language": headers["Accept-Language"]},
+            timeout=15,
+        )
+        landing_text = landing.text or ""
+        if landing.status_code != 200 or "로그인 또는 회원가입이 필요합니다" in landing_text or "MDCCOMS001.cmd" in landing_text:
+            print("  [info] krx foreign: login required, skip")
+            return {}
+    except Exception as e:
+        print(f"  [info] krx foreign: landing check failed ({e})")
+        return {}
+
+    data = {
+        "bld": "dbms/MDC/STAT/standard/MDCSTAT02202",
+        "locale": "ko_KR",
+        "inqTpCd": "2",
+        "trdVolVal": "2",
+        "askBid": "3",
+        "mktId": "ALL",
+        "strtDd": start_str,
+        "endDd": end_str,
+        "money": "3",
+        "csvxls_isNo": "false",
+    }
+    try:
+        r = session.post(url, headers=headers, data=data, timeout=20)
+        if r.status_code != 200:
+            print(f"  [info] krx foreign: status {r.status_code}")
+            return {}
+        if r.text.strip() == "LOGOUT":
+            print("  [info] krx foreign: login required, skip")
+            return {}
+        j = r.json()
+        rows = j.get("output", []) or j.get("OutBlock_1", [])
+        if not rows:
+            print("  [info] krx foreign: empty output")
+            return {}
+        for row in rows:
+            date_str = row.get("TRD_DD") or row.get("TRD_DATE") or row.get("BAS_DD")
+            if not date_str:
+                continue
+            try:
+                if "/" in date_str:
+                    d = dt.datetime.strptime(date_str, "%Y/%m/%d").date()
+                elif "-" in date_str:
+                    d = dt.datetime.strptime(date_str, "%Y-%m-%d").date()
+                else:
+                    d = dt.datetime.strptime(date_str, "%Y%m%d").date()
+            except ValueError:
+                continue
+            val_raw = None
+            for key in ["FORN_NETPUR_TRDVAL", "FORN_NET_TRDVAL", "FRGN_NETPUR", "FRGN_NET_TRDVAL"]:
+                if key in row and row[key]:
+                    val_raw = row[key]
+                    break
+            if val_raw is None:
+                continue
+            try:
+                val = float(str(val_raw).replace(",", "").replace(" ", ""))
+                result[d] = round(val / 100, 1)  # 백만원 → 억원
+            except (ValueError, TypeError):
+                continue
+        if result:
+            latest = max(result.keys())
+            print(f"  foreign flow (krx): {len(result)} days, latest {latest}: {result[latest]:+.0f}억")
+    except Exception as e:
+        print(f"  [info] krx foreign: {e}")
+        return {}
+    return result
+
+
+def fetch_naver_foreign_flow():
+    """네이버 투자자 매매동향 스크래핑. 여러 엔드포인트 & UA 시도."""
+    urls = [
+        "https://finance.naver.com/sise/investorDealTrendDay.naver",
+        "https://m.stock.naver.com/investment/trend/invertor",  # 모바일 페이지 (다른 경로 시도용)
+    ]
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+    ]
+    result = {}
+    for url in urls:
+        if result:
+            break
+        for ua in user_agents:
+            try:
+                r = requests.get(url, headers={"User-Agent": ua, "Referer": "https://finance.naver.com/"}, timeout=15)
+                if r.status_code != 200:
+                    continue
+                r.encoding = "euc-kr" if ".naver.com" in url else "utf-8"
+                try:
+                    tables = pd.read_html(r.text)
+                except Exception:
+                    continue
+                for t in tables:
+                    cols = [str(c) for c in t.columns]
+                    flat = " ".join(cols) + " " + " ".join([str(x) for x in t.values.flatten().tolist()[:50]])
+                    if "외국인" in flat and ("날짜" in flat or "일자" in flat):
+                        for row in t.itertuples(index=False):
+                            row_vals = [str(v) for v in row]
+                            date_match = None
+                            for v in row_vals:
+                                m = re.search(r"(\d{2,4})[./-](\d{1,2})[./-](\d{1,2})", v)
+                                if m:
+                                    y, mo, d = m.groups()
+                                    if len(y) == 2:
+                                        y = "20" + y
+                                    try:
+                                        date_match = dt.date(int(y), int(mo), int(d))
+                                        break
+                                    except Exception:
+                                        continue
+                            if not date_match:
+                                continue
+                            numeric_vals = []
+                            for v in row_vals:
+                                v_clean = v.replace(",", "").replace("+", "").strip()
+                                if re.match(r"^-?\d+$", v_clean):
+                                    numeric_vals.append(int(v_clean))
+                            if len(numeric_vals) >= 3:
+                                foreign_val = numeric_vals[1]
+                                result[date_match] = foreign_val
+                if result:
+                    break
+            except Exception as e:
+                print(f"  [warn] naver foreign {url[:40]}: {e}")
+                continue
+    print(f"  foreign flow (naver): {len(result)} days")
+    return result
+
+
+def fetch_hankyung_foreign_flow():
+    """한경 외국인 매매 스크래핑 - 네이버 실패 시 폴백."""
+    url = "https://markets.hankyung.com/investment/foreigner-trading"
+    result = {}
+    try:
+        r = requests.get(url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/121.0.0.0 Safari/537.36",
+            "Accept-Language": "ko-KR,ko;q=0.9",
+        }, timeout=15)
+        if r.status_code != 200:
+            return result
+        try:
+            tables = pd.read_html(r.text)
+        except Exception:
+            return result
+        for t in tables:
+            flat = " ".join([str(c) for c in t.columns])
+            if "외국인" in flat or ("일자" in flat and "순매수" in flat):
+                for row in t.itertuples(index=False):
+                    row_vals = [str(v) for v in row]
+                    date_match = None
+                    for v in row_vals:
+                        m = re.search(r"(\d{4})[./-](\d{1,2})[./-](\d{1,2})", v)
+                        if m:
+                            try:
+                                date_match = dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+                                break
+                            except Exception:
+                                continue
+                    if not date_match:
+                        continue
+                    nums = []
+                    for v in row_vals:
+                        vc = v.replace(",", "").replace("+", "").strip()
+                        if re.match(r"^-?\d+$", vc):
+                            nums.append(int(vc))
+                    if nums:
+                        result[date_match] = nums[0]
+    except Exception as e:
+        print(f"  [warn] hankyung foreign: {e}")
+    print(f"  foreign flow (hankyung): {len(result)} days")
+    return result
+
+
+def fetch_foreign_flow_combined():
+    """여러 소스 순차 시도 - KRX 최우선 (공식 JSON API)."""
+    # 1) KRX 공식 JSON API (현재는 로그인 필요 여부를 먼저 감지)
+    try:
+        result = fetch_krx_foreign_investor_flow()
+        if result and len(result) >= 3:
+            return result
+    except Exception as e:
+        print(f"  [info] krx foreign failed: {e}")
+
+    if not ENABLE_BLOCKED_WEB_SOURCES:
+        print("  [info] foreign flow: blocked web fallbacks skipped")
+        return {}
+
+    # 2) 네이버 폴백
+    result = fetch_naver_foreign_flow()
+    if result:
+        return result
+    
+    # 3) 한경 폴백
+    result = fetch_hankyung_foreign_flow()
+    if result:
+        return result
+    
+    print(f"  [warn] foreign flow: all sources failed")
+    return {}
+
+
+def fetch_krx_foreign_flow(days=LOOKBACK_DAYS):
+    """
+    [DEPRECATED - pykrx 경로는 KRX 유료 로그인 필요로 비활성]
+    사용하지 않음. 아래 data.go.kr 경로로 대체됨. 호환성 유지용 stub.
+    """
+    raise NotImplementedError("KRX_ID/KRX_PW 방식은 사용하지 않습니다. 네이버 또는 다른 경로를 쓰세요.")
+
+
+def fetch_krx_vkospi(days=LOOKBACK_DAYS):
+    """
+    [DEPRECATED - pykrx 경로는 KRX 유료 로그인 필요로 비활성]
+    VKOSPI는 FinanceDataReader의 지수 조회로 대체 (fetch_fdr_vkospi).
+    """
+    raise NotImplementedError("pykrx 방식은 사용하지 않습니다. fetch_fdr_vkospi를 쓰세요.")
+
+
+def fetch_stooq_csv(symbol, name="series", days=LOOKBACK_DAYS):
+    """
+    Stooq에서 CSV로 시계열 데이터 다운로드.
+    심볼 규칙: ^ticker (지수), ticker.us (미국주식), ticker.f (선물)
+    URL: https://stooq.com/q/d/l/?s=SYMBOL&i=d
+    """
+    from io import StringIO
+    url = f"https://stooq.com/q/d/l/?s={symbol}&i=d"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Accept": "text/csv,text/plain,*/*",
+        "Accept-Language": "en-US,en;q=0.9,pl;q=0.8",
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=20)
+        if r.status_code != 200:
+            print(f"  [info] stooq {symbol}: status {r.status_code}")
+            return pd.Series(dtype=float, name=name)
+        text = r.text.strip()
+        if not text or "Date" not in text[:30]:
+            # CAPTCHA 또는 에러 페이지
+            print(f"  [info] stooq {symbol}: invalid response (maybe CAPTCHA)")
+            return pd.Series(dtype=float, name=name)
+        df = pd.read_csv(StringIO(text))
+        if df.empty or "Date" not in df.columns or "Close" not in df.columns:
+            return pd.Series(dtype=float, name=name)
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        df = df.dropna(subset=["Date"])
+        cutoff = TODAY - dt.timedelta(days=days)
+        df = df[df["Date"].dt.date >= cutoff]
+        if df.empty:
+            return pd.Series(dtype=float, name=name)
+        s = pd.Series(df["Close"].values, index=df["Date"].dt.date.values, name=name).dropna()
+        print(f"  {name} via stooq ({symbol}): {len(s)} rows, latest {float(s.iloc[-1]):.2f}")
+        return s
+    except Exception as e:
+        print(f"  [warn] stooq {symbol}: {e}")
+        return pd.Series(dtype=float, name=name)
+
+
+def fetch_fdr_vkospi():
+    """
+    VKOSPI 지수 조회. 공식 API 우선, 막힌 웹 소스는 opt-in으로만 시도.
+    VKOSPI 정상 범위는 3~200 (2026년 중동전쟁 시 80+ 기록).
+    
+    소스 우선순위:
+      1) data.go.kr 지수시세정보 (키가 있을 때)
+      2) 수동 opt-in 된 웹 폴백
+    """
+    import urllib.parse
+
+    cutoff = TODAY - dt.timedelta(days=LOOKBACK_DAYS)
+
+    s = fetch_vkospi_data_go_kr(days=LOOKBACK_DAYS)
+    if not s.empty:
+        return s
+
+    if not ENABLE_BLOCKED_WEB_SOURCES:
+        print("  [info] vkospi: blocked web sources skipped")
+        return pd.Series(dtype=float, name="vkospi")
+
+    # 1) Stooq - 가장 안정적인 공개 소스
+    for stooq_sym in ["^vkospi", "vkospi", "^ksvkospi"]:
+        s = fetch_stooq_csv(stooq_sym, name="vkospi")
+        if not s.empty:
+            last = float(s.iloc[-1])
+            if 3 <= last <= 200:
+                return s
+
+    # 2) Yahoo Finance chart API
+    end_ts = int(dt.datetime.now(KST).timestamp())
+    start_ts = end_ts - LOOKBACK_DAYS * 86400
+    yahoo_symbols = ["^VKOSPI", "^KSVKOSPI"]
+    for symbol in yahoo_symbols:
+        try:
+            url = (f"https://query1.finance.yahoo.com/v8/finance/chart/"
+                   f"{urllib.parse.quote(symbol)}"
+                   f"?period1={start_ts}&period2={end_ts}&interval=1d")
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                              "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://finance.yahoo.com/",
+            }
+            r = requests.get(url, headers=headers, timeout=20)
+            if r.status_code != 200:
+                continue
+            data = r.json()
+            result = data["chart"]["result"][0]
+            timestamps = result.get("timestamp", [])
+            closes = result["indicators"]["quote"][0].get("close", [])
+            if not timestamps or not closes:
+                continue
+            dates = [dt.datetime.fromtimestamp(t, tz=dt.timezone.utc).date() for t in timestamps]
+            s = pd.Series(closes, index=dates, name="vkospi").dropna()
+            if s.empty:
+                continue
+            last = float(s.iloc[-1])
+            if 3 <= last <= 200:
+                print(f"  vkospi via yahoo ({symbol}): {len(s)} rows, latest {last:.2f}")
+                return s
+            else:
+                print(f"  [warn] yahoo {symbol} out of range ({last:.2f})")
+        except Exception as e:
+            print(f"  [warn] yahoo vkospi {symbol}: {e}")
+
+    # 3) FDR fallback
+    for symbol in ["VKOSPI", "^VKOSPI"]:
+        try:
+            df = fdr.DataReader(symbol)
+            if df is None or df.empty:
+                continue
+            s = df["Close"] if "Close" in df.columns else df.iloc[:, 0]
+            s = s.dropna()
+            if s.empty:
+                continue
+            last = float(s.iloc[-1])
+            if not (3 <= last <= 200):
+                print(f"  [warn] fdr {symbol} out of range ({last:.2f}), skip")
+                continue
+            s.index = pd.to_datetime(s.index).date
+            s = s[s.index >= cutoff]
+            print(f"  vkospi via fdr ({symbol}): {len(s)} rows, latest {last:.2f}")
+            return s.rename("vkospi")
+        except Exception as e:
+            print(f"  [warn] fdr {symbol}: {e}")
+
+    # 4) Investing.com fallback
+    try:
+        s = fetch_investing_history("https://www.investing.com/indices/kospi-volatility-historical-data", "vkospi")
+        if not s.empty:
+            last = float(s.iloc[-1])
+            if 3 <= last <= 200:
+                return s
+    except Exception as e:
+        print(f"  [info] investing vkospi: {e}")
+
+    print(f"  [warn] vkospi: all sources failed")
+    return pd.Series(dtype=float, name="vkospi")
+
+
+# ================================================================
+# 공공데이터포털 (data.go.kr) - 금융위원회_금융투자협회종합통계정보
+# ================================================================
+# Base URL: https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService
+# 인증: serviceKey 파라미터 (DATA_GO_KR_API_KEY 환경변수)
+# 엔드포인트:
+#   - getGrantingOfCreditBalanceInfo: 신용공여잔고추이
+#   - getSecuritiesMarketTotalCapitalInfo: 증시자금추이 (미수금/반대매매 포함)
+
+DATA_GO_KR_BASE = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService"
+DATA_GO_KR_MARKET_INDEX_BASE = "https://apis.data.go.kr/1160100/service/GetMarketIndexInfoService"
+
+
+def _data_go_kr_fetch(endpoint, extra_params=None, max_pages=10, num_rows=200, base_url=None):
+    """
+    공공데이터포털 API 공통 호출 함수. JSON 응답 → list[dict] 반환.
+    페이징 자동 처리 (최대 max_pages 페이지).
+    """
+    api_key = os.environ.get("DATA_GO_KR_API_KEY")
+    if not api_key:
+        raise RuntimeError("DATA_GO_KR_API_KEY 환경변수가 설정되지 않았습니다")
+
+    url = f"{base_url or DATA_GO_KR_BASE}/{endpoint}"
+    all_items = []
+    for page in range(1, max_pages + 1):
+        params = {
+            "serviceKey": api_key,
+            "resultType": "json",
+            "numOfRows": num_rows,
+            "pageNo": page,
+        }
+        if extra_params:
+            params.update(extra_params)
+        r = requests.get(url, params=params, timeout=30)
+        r.raise_for_status()
+        try:
+            data = r.json()
+        except ValueError:
+            # 에러 응답이 XML로 올 수 있음
+            print(f"  [warn] {endpoint} non-json response: {r.text[:200]}")
+            break
+        # 응답 구조: {"response": {"header": {...}, "body": {"items": {"item": [...]}, ...}}}
+        try:
+            body = data["response"]["body"]
+            items_container = body.get("items", {})
+            if not items_container:
+                break
+            items = items_container.get("item", []) if isinstance(items_container, dict) else items_container
+            if isinstance(items, dict):
+                items = [items]  # 단일 항목이 dict로 올 때
+            if not items:
+                break
+            all_items.extend(items)
+            # 더 가져올 게 있는지 확인
+            total = int(body.get("totalCount", 0))
+            if len(all_items) >= total:
+                break
+        except (KeyError, TypeError) as e:
+            print(f"  [warn] {endpoint} parse error: {e}")
+            break
+    return all_items
+
+
+def fetch_data_go_kr_market_index_series(endpoint, name, days=LOOKBACK_DAYS, idx_name=None, like_idx_name=None,
+                                         valid_range=None):
+    """
+    공공데이터포털 지수시세정보 공통 파서.
+    종가(clpr)를 일자별 Series로 반환한다.
+    """
+    end = TODAY.strftime("%Y%m%d")
+    start = (TODAY - dt.timedelta(days=days)).strftime("%Y%m%d")
+    params = {"beginBasDt": start, "endBasDt": end}
+    if idx_name:
+        params["idxNm"] = idx_name
+    if like_idx_name:
+        params["likeIdxNm"] = like_idx_name
+
+    items = _data_go_kr_fetch(
+        endpoint,
+        extra_params=params,
+        max_pages=10,
+        num_rows=500,
+        base_url=DATA_GO_KR_MARKET_INDEX_BASE,
+    )
+
+    result = {}
+    for it in items:
+        try:
+            bas_dt = str(it.get("basDt", "")).strip()
+            idx_nm = str(it.get("idxNm", "")).strip()
+            if len(bas_dt) != 8:
+                continue
+            if idx_name and idx_nm != idx_name:
+                continue
+            if like_idx_name and like_idx_name not in idx_nm:
+                continue
+            close_raw = str(it.get("clpr", "")).replace(",", "").strip()
+            if not close_raw:
+                continue
+            d = dt.datetime.strptime(bas_dt, "%Y%m%d").date()
+            close_val = float(close_raw)
+            if valid_range and not (valid_range[0] <= close_val <= valid_range[1]):
+                continue
+            result[d] = close_val
+        except (ValueError, TypeError):
+            continue
+
+    s = pd.Series(result, name=name, dtype=float).sort_index()
+    if not s.empty:
+        print(f"  {name} via data.go.kr ({endpoint}): {len(s)} rows, latest {float(s.iloc[-1]):.2f}")
+    return s
+
+
+def fetch_vkospi_data_go_kr(days=LOOKBACK_DAYS):
+    """
+    data.go.kr 공식 지수시세정보 우선 조회.
+    키가 없으면 조용히 비운다.
+    """
+    if not os.environ.get("DATA_GO_KR_API_KEY", "").strip():
+        return pd.Series(dtype=float, name="vkospi")
+
+    attempts = [
+        ("getStockMarketIndex", None, "VKOSPI"),
+        ("getStockMarketIndex", None, "변동성"),
+        ("getBondMarketIndex", None, "VKOSPI"),
+    ]
+    for endpoint, idx_name, like_idx_name in attempts:
+        try:
+            s = fetch_data_go_kr_market_index_series(
+                endpoint,
+                "vkospi",
+                days=days,
+                idx_name=idx_name,
+                like_idx_name=like_idx_name,
+                valid_range=(3, 200),
+            )
+            if not s.empty:
+                return s
+        except requests.HTTPError as e:
+            resp = getattr(e, "response", None)
+            if resp is not None and resp.status_code == 404:
+                continue
+            print(f"  [info] data.go.kr vkospi {endpoint}: {e}")
+        except Exception as e:
+            print(f"  [info] data.go.kr vkospi {endpoint}: {e}")
+    return pd.Series(dtype=float, name="vkospi")
+
+
+def fetch_credit_balance(days=LOOKBACK_DAYS):
+    """
+    신용공여잔고추이 (getGrantingOfCreditBalanceInfo).
+    일자별 신용거래융자 전체 잔고(백만원 → 억원 변환) 반환.
+    
+    Returns:
+        dict {date: credit_balance_eok}  - 네이버 호환 포맷
+    """
+    end = TODAY.strftime("%Y%m%d")
+    start = (TODAY - dt.timedelta(days=days)).strftime("%Y%m%d")
+    items = _data_go_kr_fetch(
+        "getGrantingOfCreditBalanceInfo",
+        extra_params={"beginBasDt": start, "endBasDt": end},
+        max_pages=5,
+        num_rows=500,
+    )
+    result = {}
+    for it in items:
+        try:
+            bas_dt = str(it.get("basDt", "")).strip()
+            if len(bas_dt) != 8:
+                continue
+            d = dt.datetime.strptime(bas_dt, "%Y%m%d").date()
+            # crdTrFingWhl: 신용거래융자 전체 (백만원 단위) → 억원 변환
+            val_mil = it.get("crdTrFingWhl")
+            if val_mil is None:
+                continue
+            val_eok = int(float(val_mil) / 100)  # 백만원 → 억원
+            result[d] = val_eok
+        except (ValueError, TypeError) as e:
+            continue
+    print(f"  credit balance (data.go.kr): {len(result)} days")
+    return result
+
+
+def fetch_securities_market_capital(days=LOOKBACK_DAYS):
+    """
+    증시자금추이 (getSecuritiesMarketTotalCapitalInfo).
+    미수금 대비 반대매매 금액(원 단위 → 억원 변환) 등 반환.
+    
+    Returns:
+        dict {
+          'forced_sale': {date: forced_sale_eok},
+          'investor_deposit': {date: deposit_eok},  # 예탁금
+        }
+    """
+    end = TODAY.strftime("%Y%m%d")
+    start = (TODAY - dt.timedelta(days=days)).strftime("%Y%m%d")
+    items = _data_go_kr_fetch(
+        "getSecuritiesMarketTotalCapitalInfo",
+        extra_params={"beginBasDt": start, "endBasDt": end},
+        max_pages=5,
+        num_rows=500,
+    )
+    forced = {}
+    deposit = {}
+    for it in items:
+        try:
+            bas_dt = str(it.get("basDt", "")).strip()
+            if len(bas_dt) != 8:
+                continue
+            d = dt.datetime.strptime(bas_dt, "%Y%m%d").date()
+            # brkTrdUcolMnyVsOppsTrdAmt: 위탁매매 미수금 대비 실제반대매매금액 (원 단위)
+            forced_raw = it.get("brkTrdUcolMnyVsOppsTrdAmt")
+            if forced_raw is not None:
+                forced[d] = int(float(forced_raw) / 1e8)  # 원 → 억원
+            # invrDpsgAmt: 투자자 예탁금 (원 단위)
+            deposit_raw = it.get("invrDpsgAmt")
+            if deposit_raw is not None:
+                deposit[d] = int(float(deposit_raw) / 1e8)
+        except (ValueError, TypeError) as e:
+            continue
+    print(f"  securities market (data.go.kr): forced={len(forced)}, deposit={len(deposit)}")
+    return {"forced_sale": forced, "investor_deposit": deposit}
+
+
+def fetch_vkospi_naver():
+    """[DEPRECATED] 네이버 VKOSPI 단일 스팟값 스크래핑 - fallback용."""
+    url = "https://finance.naver.com/sise/sise_index.naver?code=VKOSPI"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    r = requests.get(url, headers=headers, timeout=15)
+    r.encoding = "euc-kr"
+    soup = BeautifulSoup(r.text, "html.parser")
+    try:
+        elem = soup.select_one("#now_value")
+        if elem:
+            v = float(elem.text.replace(",", "").strip())
+            return v
+    except Exception:
+        pass
+    text = soup.get_text(" ", strip=True)
+    m = re.search(r"VKOSPI[^\d]{0,20}([\d]+\.[\d]+)", text)
+    if m:
+        return float(m.group(1))
+    return None
+
+
+_ORIGINAL_FETCH_NAVER_DEPOSIT = fetch_naver_deposit
+_ORIGINAL_FETCH_NAVER_FOREIGN_FLOW = fetch_naver_foreign_flow
+_ORIGINAL_FETCH_HANKYUNG_FOREIGN_FLOW = fetch_hankyung_foreign_flow
+_ORIGINAL_FETCH_VKOSPI_NAVER = fetch_vkospi_naver
+
+
+def fetch_naver_deposit():
+    if not ENABLE_BLOCKED_WEB_SOURCES:
+        return {"credit_balance_eok": None, "forced_sale_eok": None}
+    return _ORIGINAL_FETCH_NAVER_DEPOSIT()
+
+
+def fetch_naver_foreign_flow():
+    if not ENABLE_BLOCKED_WEB_SOURCES:
+        return {}
+    return _ORIGINAL_FETCH_NAVER_FOREIGN_FLOW()
+
+
+def fetch_hankyung_foreign_flow():
+    if not ENABLE_BLOCKED_WEB_SOURCES:
+        return {}
+    return _ORIGINAL_FETCH_HANKYUNG_FOREIGN_FLOW()
+
+
+def fetch_vkospi_naver():
+    if not ENABLE_BLOCKED_WEB_SOURCES:
+        return None
+    return _ORIGINAL_FETCH_VKOSPI_NAVER()
+
+
+def fetch_vkospi_data_go_kr(days=LOOKBACK_DAYS):
+    if not os.environ.get("DATA_GO_KR_API_KEY", "").strip():
+        return pd.Series(dtype=float, name="vkospi")
+
+    for endpoint, idx_name, like_idx_name in VKOSPI_DATA_GO_KR_ATTEMPTS:
+        try:
+            s = fetch_data_go_kr_market_index_series(
+                endpoint,
+                "vkospi",
+                days=days,
+                idx_name=idx_name,
+                like_idx_name=like_idx_name,
+                valid_range=(3, 200),
+            )
+            if not s.empty:
+                return s
+        except requests.HTTPError as e:
+            resp = getattr(e, "response", None)
+            if resp is not None and resp.status_code == 404:
+                continue
+            print(f"  [info] data.go.kr vkospi {endpoint}: {e}")
+        except Exception as e:
+            print(f"  [info] data.go.kr vkospi {endpoint}: {e}")
+    return pd.Series(dtype=float, name="vkospi")
+
+
 def fetch_sector_basket(tickers):
     """섹터 종목 바스켓을 Base 100 누적 추세로 반환."""
     closes = []
@@ -532,6 +1350,96 @@ def fetch_m7_plus_basket():
 # ================================================================
 # 한국 외국인 주식 보유금액 & 비중 - index.go.kr (월별)
 # ================================================================
+
+def fetch_foreign_holding_kr():
+    """
+    index.go.kr(지표나라) 외국인 증권투자 현황 HTML 파싱.
+    Returns: dict {date: {'amount_trillion': float, 'pct': float}}
+    
+    페이지 구조가 자주 바뀌므로 여러 regex 패턴을 관대하게 시도.
+    """
+    url = "https://www.index.go.kr/unity/potal/main/EachDtlPageDetail.do?idx_cd=1086"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Accept-Language": "ko-KR,ko;q=0.9",
+    }
+    result = {}
+    try:
+        r = requests.get(url, headers=headers, timeout=20)
+        if r.status_code != 200:
+            print(f"  [warn] foreign holding kr: status {r.status_code}")
+            return result
+        text = r.text
+        
+        # 금액 패턴 여러 종류 시도
+        amount_patterns = [
+            # "('YY.MM월말) XXX.X조원" 다양한 따옴표
+            re.compile(r"[\(\[\uFF08]?['\u2019\u2018\u201C\u201D`]?(\d{2})[\.\-](\d{1,2})\s*월\s*말?['\u2019\u2018\u201C\u201D`]?[\)\]\uFF09]?\s*[:\-\s]*([\d,]+\.?\d*)\s*조\s*원"),
+            # "2023년 12월: 573.8조원" 형식
+            re.compile(r"(20\d{2})\s*년\s*(\d{1,2})\s*월[^\d]{1,10}([\d,]+\.?\d*)\s*조"),
+            # "2024.12 573.8조" 형식
+            re.compile(r"(20\d{2})[\.\-/](\d{1,2})\s*[:\s]+([\d,]+\.?\d*)\s*조"),
+        ]
+        
+        for pattern in amount_patterns:
+            for m in pattern.finditer(text):
+                try:
+                    y_raw, mo_raw, val_raw = m.group(1), m.group(2), m.group(3)
+                    y = int(y_raw)
+                    if y < 100:
+                        y += 2000
+                    mo = int(mo_raw)
+                    amount = float(val_raw.replace(",", ""))
+                    if 1 <= mo <= 12 and 2000 <= y <= 2099 and 100 <= amount <= 2000:
+                        d = dt.date(y, mo, 1)
+                        if d not in result or result[d].get("amount_trillion") is None:
+                            if d not in result:
+                                result[d] = {"amount_trillion": amount, "pct": None}
+                            else:
+                                result[d]["amount_trillion"] = amount
+                except (ValueError, TypeError):
+                    continue
+        
+        # 비중 패턴 여러 종류 시도
+        pct_patterns = [
+            # "('YY.MM월) 32.3" 
+            re.compile(r"[\(\[\uFF08]?['\u2019\u2018\u201C\u201D`]?(\d{2})[\.\-](\d{1,2})\s*월['\u2019\u2018\u201C\u201D`]?[\)\]\uFF09]?\s*[:\-\s]*(\d{2}\.\d)"),
+            # "2024.12 32.3%"
+            re.compile(r"(20\d{2})[\.\-/](\d{1,2})\s*[:\s]+(\d{2}\.\d)\s*%?"),
+        ]
+        for pattern in pct_patterns:
+            for m in pattern.finditer(text):
+                try:
+                    y_raw, mo_raw, val_raw = m.group(1), m.group(2), m.group(3)
+                    y = int(y_raw)
+                    if y < 100:
+                        y += 2000
+                    mo = int(mo_raw)
+                    pct = float(val_raw)
+                    if 1 <= mo <= 12 and 2000 <= y <= 2099 and 15 <= pct <= 50:
+                        d = dt.date(y, mo, 1)
+                        if d not in result:
+                            result[d] = {"amount_trillion": None, "pct": pct}
+                        elif result[d].get("pct") is None:
+                            result[d]["pct"] = pct
+                except (ValueError, TypeError):
+                    continue
+        
+        cutoff = TODAY - dt.timedelta(days=36 * 31)
+        result = {d: v for d, v in result.items() if d >= cutoff}
+        if result:
+            latest = max(result.keys())
+            lv = result[latest]
+            amt_str = f"{lv['amount_trillion']:.0f}조" if lv.get('amount_trillion') else "-"
+            pct_str = f"{lv['pct']:.1f}%" if lv.get('pct') else "-"
+            print(f"  foreign holding kr (index.go.kr): {len(result)} months, latest {latest}: {amt_str} / {pct_str}")
+        else:
+            print(f"  [warn] foreign holding kr: no matches found (page length={len(text)})")
+    except Exception as e:
+        print(f"  [warn] foreign holding kr: {e}")
+    return result
+
+
 def fetch_foreign_holding_kr():
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
@@ -602,8 +1510,8 @@ def fetch_foreign_holding_kr():
 
 MAIN_COLS = [
     "date",
-    "kospi", "kosdaq", "samsung", "hynix",
-    "credit_balance_eok", "forced_sale_eok",
+    "kospi", "kosdaq", "samsung", "hynix", "vkospi",
+    "credit_balance_eok", "forced_sale_eok", "foreign_net_eok",
     "samsung_ret_pct", "hynix_ret_pct",
     "sp500", "nasdaq", "vix", "nvda", "ust10y", "cor1m",
     "sec_반도체", "sec_방산조선", "sec_바이오", "sec_2차전지", "sec_금융",
@@ -666,8 +1574,14 @@ def update_data():
         try:
             return fetch_credit_balance()  # {date: eok}
         except Exception as e:
-            return {}
+            if not ENABLE_BLOCKED_WEB_SOURCES:
+                print(f"  [info] data.go.kr credit failed and blocked web fallbacks are disabled: {e}")
+                return {}
             print(f"  [info] data.go.kr credit failed, fallback to naver: {e}")
+            dep = fetch_naver_deposit()
+            # 네이버는 단일 스팟값만 반환 → 최신일 하나만
+            if dep.get("credit_balance_eok"):
+                return {TODAY: dep["credit_balance_eok"]}
             return {}
 
     # 2. 증시자금추이 (반대매매, 예탁금) - data.go.kr 우선, 실패 시 네이버
@@ -675,10 +1589,42 @@ def update_data():
         try:
             return fetch_securities_market_capital()  # {'forced_sale': {...}, 'investor_deposit': {...}}
         except Exception as e:
+            if not ENABLE_BLOCKED_WEB_SOURCES:
+                print(f"  [info] data.go.kr market capital failed and blocked web fallbacks are disabled: {e}")
+                return {"forced_sale": {}, "investor_deposit": {}}
+            print(f"  [info] data.go.kr market capital failed, fallback to naver: {e}")
+            dep = fetch_naver_deposit()
+            result = {"forced_sale": {}, "investor_deposit": {}}
+            if dep.get("forced_sale_eok"):
+                result["forced_sale"][TODAY] = dep["forced_sale_eok"]
+            return result
+
+    # 3. 외국인 순매수 - 네이버 여러 경로 + 한경 폴백
+    def _foreign_flow():
+        try:
+            return fetch_foreign_flow_combined()
+        except Exception as e:
+            print(f"  [warn] foreign flow failed: {e}")
             return {}
+
+    # 4. VKOSPI - 공식 API 우선, opt-in 시에만 웹 폴백
+    def _vkospi_with_fallback():
+        series = fetch_fdr_vkospi()
+        if not series.empty:
+            return {"type": "series", "data": series}
+        if ENABLE_BLOCKED_WEB_SOURCES:
+            try:
+                v = fetch_vkospi_naver()
+                if v is not None:
+                    return {"type": "spot", "data": v}
+            except Exception as e:
+                print(f"  [warn] naver vkospi also failed: {e}")
+        return {"type": "none", "data": None}
 
     credit_map = safe("credit", _credit_balance_with_fallback, default={})
     market_cap = safe("market_cap", _market_capital_with_fallback, default={"forced_sale": {}, "investor_deposit": {}})
+    foreign_flow = safe("foreign", _foreign_flow, default={})
+    vkospi_result = safe("vkospi", _vkospi_with_fallback, default={"type": "none", "data": None})
 
     series_dict = {
         "kospi": kospi, "kosdaq": kosdaq, "samsung": samsung, "hynix": hynix,
@@ -688,20 +1634,37 @@ def update_data():
     }
     df = pd.DataFrame(series_dict)
     df = df.reset_index().rename(columns={"index": "date"})
-    df["samsung_ret_pct"] = df["samsung"].pct_change(fill_method=None) * 100
-    df["hynix_ret_pct"] = df["hynix"].pct_change(fill_method=None) * 100
+    df["samsung_ret_pct"] = df["samsung"].pct_change() * 100
+    df["hynix_ret_pct"] = df["hynix"].pct_change() * 100
     df["credit_balance_eok"] = None
     df["forced_sale_eok"] = None
+    df["foreign_net_eok"] = None
+    df["vkospi"] = None
 
-    # 신용공여잔고 채우기
+    # 신용공여잔고 채우기 (전체 시계열)
     for cdate, cval in credit_map.items():
         if cdate in df["date"].values:
             df.loc[df["date"] == cdate, "credit_balance_eok"] = cval
 
-    # 반대매매 채우기
+    # 반대매매 채우기 (전체 시계열)
     for fdate, fval in market_cap.get("forced_sale", {}).items():
         if fdate in df["date"].values:
             df.loc[df["date"] == fdate, "forced_sale_eok"] = fval
+
+    # VKOSPI 채우기
+    if vkospi_result["type"] == "series":
+        vseries = vkospi_result["data"]
+        for vdate, vval in vseries.items():
+            if vdate in df["date"].values:
+                df.loc[df["date"] == vdate, "vkospi"] = float(vval)
+    elif vkospi_result["type"] == "spot" and not df.empty:
+        latest_date = df["date"].max()
+        df.loc[df["date"] == latest_date, "vkospi"] = float(vkospi_result["data"])
+
+    # 외국인 순매수 채우기
+    for date, val in foreign_flow.items():
+        if date in df["date"].values:
+            df.loc[df["date"] == date, "foreign_net_eok"] = val
 
     for c in MAIN_COLS:
         if c not in df.columns:
@@ -718,15 +1681,13 @@ def update_data():
     m7_basket = safe("m7_plus", fetch_m7_plus_basket, default={})
     kr_foreign_holding = safe("foreign_holding_kr", fetch_foreign_holding_kr, default={})
     gl = safe("global_liquidity", fetch_global_liquidity_proxy, default={"global_liquidity": pd.Series(dtype=float), "usdjpy": pd.Series(dtype=float)})
-    usdkrw = safe("usdkrw", fetch_usdkrw_series, default=pd.Series(dtype=float, name="usdkrw"))
 
     extras = {
-        "us_margin_debt": us_margin_debt,
-        "m7_basket": m7_basket,
-        "kr_foreign_holding": kr_foreign_holding,
+        "us_margin_debt": us_margin_debt,         # {date: bil_usd}  월별
+        "m7_basket": m7_basket,                   # {ticker: Series}
+        "kr_foreign_holding": kr_foreign_holding, # {date: {amount_trillion, pct}}  월별
         "global_liquidity": gl.get("global_liquidity", pd.Series(dtype=float)),
         "usdjpy": gl.get("usdjpy", pd.Series(dtype=float)),
-        "usdkrw": usdkrw,
     }
     return combined, extras
 
@@ -797,6 +1758,17 @@ def compute_signals(df, extras=None):
         "description": f"최근 5일 동시 -3%: {both}회"
     }
 
+    foreign_ser = pd.to_numeric(df["foreign_net_eok"], errors="coerce").dropna()
+    kr["KR4"] = {"name": "외국인 7일 누적 순매도", "level": 0, "description": "데이터 부족"}
+    if len(foreign_ser) >= 7:
+        sum7 = float(foreign_ser.tail(7).sum())
+        outflow = -sum7 / 10000
+        kr["KR4"] = {
+            "name": "외국인 7일 누적 순매도",
+            "level": level_from_gap(outflow, [1.0, 3.0, 5.0]),
+            "description": f"최근 7영업일 합계 {sum7/10000:+.2f}조"
+        }
+
     dev_kospi = pct_deviation_from_ma(df["kospi"], 200)
     kr["KR5"] = {"name": "코스피-200일선 괴리", "level": 0, "description": "데이터 부족"}
     if dev_kospi is not None:
@@ -804,6 +1776,16 @@ def compute_signals(df, extras=None):
             "name": "코스피-200일선 괴리율",
             "level": level_from_gap(abs(dev_kospi), [10, 20, 30]),
             "description": f"200일선 대비 {dev_kospi:+.1f}%"
+        }
+
+    vkospi_ser = pd.to_numeric(df["vkospi"], errors="coerce").dropna()
+    kr["KR6"] = {"name": "VKOSPI 공포지수", "level": 0, "description": "데이터 수집 중 (네이버)"}
+    if len(vkospi_ser):
+        v = float(vkospi_ser.iloc[-1])
+        kr["KR6"] = {
+            "name": "VKOSPI 공포지수",
+            "level": level_from_gap(v, [20, 30, 40]),
+            "description": f"현재 {v:.1f}"
         }
 
     sp500_ser = pd.to_numeric(df["sp500"], errors="coerce").dropna()
@@ -1065,6 +2047,7 @@ def render_regime_block(regime, title):
     """
 
 
+
 def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     if extras is None:
         extras = {}
@@ -1132,6 +2115,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     kosdaq = series_connected("kosdaq", min_val=300, max_daily_jump_pct=20)
     sp500 = series_connected("sp500", min_val=1000, max_daily_jump_pct=20)
     nasdaq = series_connected("nasdaq", min_val=1000, max_daily_jump_pct=20)
+    vkospi = series_connected("vkospi", min_val=3, max_val=200, max_daily_jump_pct=80)
     cor1m = series_connected("cor1m", min_val=1, max_val=100, max_daily_jump_pct=60)
 
     js_data = {
@@ -1144,8 +2128,10 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
         "kosdaq_base100": base100("kosdaq"),
         "samsung_base100": base100("samsung"),
         "hynix_base100": base100("hynix"),
+        "vkospi": vkospi,
         "credit": series_connected("credit_balance_eok", min_val=100000, max_daily_jump_pct=15),
         "forced": series_nullable("forced_sale_eok"),
+        "foreign": series_nullable("foreign_net_eok"),
         "sp500": sp500,
         "sp500_ma200": ma_series("sp500", 200),
         "nasdaq": nasdaq,
@@ -1234,6 +2220,18 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     js_data["global_liquidity"] = gl_proxy_vals
     js_data["usdjpy"] = usdjpy_vals
 
+    # 3. 한국 외국인 보유금액 + 비중 (월별)
+    fhold = extras.get("kr_foreign_holding", {}) or {}
+    if fhold:
+        sorted_fh = sorted(fhold.items())
+        js_data["fh_dates"] = [d.strftime("%Y-%m") for d, _ in sorted_fh]
+        js_data["fh_amount"] = [v.get("amount_trillion") for _, v in sorted_fh]
+        js_data["fh_pct"] = [v.get("pct") for _, v in sorted_fh]
+    else:
+        js_data["fh_dates"] = []
+        js_data["fh_amount"] = []
+        js_data["fh_pct"] = []
+
     last_date = df_plot["date"].iloc[-1].strftime("%Y년 %m월 %d일") if not df_plot.empty else "대기"
     kr_color = COLOR.get(signals["label_kr"], "#888")
     us_color = COLOR.get(signals["label_us"], "#888")
@@ -1314,7 +2312,9 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
   </div>
   <div class="signal-grid">{kr_cards}</div>
   <div class="section-title">차트</div>
-  <div class="chart"><div id="c_kr_rel" style="height:320px;"></div></div>
+  <div class="chart-grid">
+    <div class="chart"><div id="c_kr_rel" style="height:320px;"></div></div>
+    <div class="chart"><div id="c_kr_vkospi" style="height:320px;"></div></div>
   </div>
   <div class="chart-grid">
     <div class="chart"><div id="c_kr_kospi_abs" style="height:280px;"></div></div>
@@ -1322,8 +2322,8 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
   </div>
   <div class="chart"><div id="c_kr_credit" style="height:300px;"></div></div>
   <div class="chart"><div id="c_kr_forced" style="height:280px;"></div></div>
-  <div class="chart"><div id="c_kr_usdkrw" style="height:280px;"></div></div>
-  <div class="chart"><div id="c_kr_credit_vs_krw" style="height:300px;"></div></div>
+  <div class="chart"><div id="c_kr_foreign" style="height:300px;"></div></div>
+  <div class="chart"><div id="c_kr_foreign_hold" style="height:320px;"></div></div>
   <div class="chart"><div id="c_kr_semi" style="height:280px;"></div></div>
   <div class="chart"><div id="c_kr_sector" style="height:320px;"></div></div>
 </div>
@@ -1397,6 +2397,13 @@ safePlot('c_kr_rel', [
   {{x: D.dates, y: D.kosdaq_base100, type: 'scatter', mode: 'lines', name: '코스닥', connectgaps: true, line: {{color: '#534AB7', width: 2.5}}}}
 ], '코스피 vs 코스닥 상대 추세 (Base 100)', {{yaxis: {{title: 'Base 100'}}}});
 
+safePlot('c_kr_vkospi', [
+  {{x: D.dates, y: D.vkospi, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VKOSPI', connectgaps: true, line: {{color: '#A32D2D', width: 2.2}}, fillcolor: 'rgba(163,45,45,0.10)'}}
+], 'VKOSPI 공포지수', {{yaxis: {{title: 'VKOSPI', range: [0, 80]}}, shapes: [
+  {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 20, y1: 20, line: {{color: '#BA7517', width: 1, dash: 'dot'}}}},
+  {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 30, y1: 30, line: {{color: '#A32D2D', width: 1, dash: 'dot'}}}},
+  {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 40, y1: 40, line: {{color: '#A32D2D', width: 1.5, dash: 'dash'}}}}
+]}});
 
 safePlot('c_kr_kospi_abs', [
   {{x: D.dates, y: D.kospi, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#185FA5', width: 2.3}}}},
@@ -1415,16 +2422,7 @@ safePlot('c_kr_credit', [
 
 safePlot('c_kr_forced', [{{x: D.dates, y: D.forced, type: 'bar', name: '반대매매(억)', marker: {{color: (D.forced || []).map(v => v >= 600 ? '#A32D2D' : v >= 400 ? '#D85A30' : v >= 200 ? '#BA7517' : '#888')}}}}], '일일 반대매매');
 
-safePlot('c_kr_usdkrw', [
-  {{x: D.dates, y: D.usdkrw, type: 'scatter', mode: 'lines', name: '원/달러', connectgaps: true,
-    line: {{color: '#C0392B', width: 2}}}}
-], '원달러 환율 (KRW/USD)', {{
-  yaxis: {{title: '원/달러', tickformat: ',.0f'}},
-  shapes: [
-    {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 1300, y1: 1300, line: {{color: '#BA7517', width: 1, dash: 'dot'}}}},
-    {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 1400, y1: 1400, line: {{color: '#A32D2D', width: 1, dash: 'dash'}}}}
-  ]
-}});
+safePlot('c_kr_foreign', [{{x: D.dates, y: D.foreign, type: 'bar', name: '외국인(억)', marker: {{color: (D.foreign || []).map(v => (v ?? 0) < 0 ? '#A32D2D' : '#1D9E75')}}}}], '외국인 일별 순매수/매도 (코스피+코스닥)');
 
 safePlot('c_kr_semi', [
   {{x: D.dates, y: D.kospi_base100, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#888', width: 1.2, dash: 'dot'}}}},
@@ -1609,38 +2607,40 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
   }} catch (e) {{ console.error('gl plot:', e); showEmpty(id); }}
 }})();
 
-// === 신용잔고 vs 원달러 환율 (이중축) ===
+// === 한국 외국인 보유금액 + 비중 (월별, 이중축) ===
 (function() {{
-  const id = 'c_kr_credit_vs_krw';
+  const id = 'c_kr_foreign_hold';
   const el = document.getElementById(id);
   if (!el) return;
-  const hasCredit = hasValues(D.credit);
-  const hasKrw = hasValues(D.usdkrw);
-  if (!hasCredit && !hasKrw) {{ showEmpty(id); return; }}
+  if (!D.fh_dates || D.fh_dates.length === 0) {{
+    showEmpty(id);
+    return;
+  }}
+  const hasAmount = hasValues(D.fh_amount);
+  const hasPct = hasValues(D.fh_pct);
+  if (!hasAmount && !hasPct) {{ showEmpty(id); return; }}
   try {{
     const traces = [];
-    if (hasCredit) {{
+    if (hasAmount) {{
       traces.push({{
-        x: D.dates, y: D.credit, type: 'scatter', mode: 'lines',
-        name: '신용잔고(억)', connectgaps: true,
-        line: {{color: '#185FA5', width: 2}}, fill: 'tozeroy',
-        fillcolor: 'rgba(24,95,165,0.10)'
+        x: D.fh_dates, y: D.fh_amount, type: 'bar', name: '보유금액(조원)',
+        marker: {{color: '#185FA5', opacity: 0.75}}
       }});
     }}
-    if (hasKrw) {{
+    if (hasPct) {{
       traces.push({{
-        x: D.dates, y: D.usdkrw, type: 'scatter', mode: 'lines',
-        name: '원/달러', yaxis: 'y2', connectgaps: true,
-        line: {{color: '#C0392B', width: 1.8, dash: 'dot'}}
+        x: D.fh_dates, y: D.fh_pct, type: 'scatter', mode: 'lines+markers',
+        name: '보유비중(%)', yaxis: 'y2',
+        line: {{color: '#BA7517', width: 2}}, marker: {{size: 5}}
       }});
     }}
     Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
-      title: {{text: '신용잔고 vs 원달러 (이중축)', font: {{size: 14}}}},
-      yaxis: {{title: '신용잔고(억)', tickformat: ',.0f'}},
-      yaxis2: {{title: '원/달러', overlaying: 'y', side: 'right', tickformat: ',.0f'}},
+      title: {{text: '외국인 주식 보유금액 + 비중 (월별)', font: {{size: 14}}}},
+      yaxis: {{title: '조원'}},
+      yaxis2: {{title: '비중(%)', overlaying: 'y', side: 'right'}},
       legend: {{orientation: 'h', y: -0.18}}
     }}), {{displayModeBar: false, responsive: true}});
-  }} catch (e) {{ console.error('credit_krw plot:', e); showEmpty(id); }}
+  }} catch (e) {{ console.error('fhold plot:', e); showEmpty(id); }}
 }})();
 </script>
 </body>
