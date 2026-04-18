@@ -1,5 +1,5 @@
 """
-빚투 모니터 v8 - 네이버 크롤링 완전 제거 및 공공데이터 API / pykrx 적용
+빚투 모니터 v10 - 원본 UI 완전 복구 + 반도체/업종 누적추세선 + API 연동
 """
 
 import os
@@ -89,7 +89,6 @@ def fetch_kofia_deposit_api():
         return result
 
     try:
-        # 금융투자협회종합통계정보 -> 증시자금 추이
         url = "http://apis.data.go.kr/1160100/service/GetKofiaStatsInfoService/getStkMktFundTrend"
         params = {
             "serviceKey": urllib.parse.unquote(api_key), 
@@ -100,20 +99,15 @@ def fetch_kofia_deposit_api():
         
         response = requests.get(url, params=params, timeout=15)
         data = response.json()
-        
         items = data.get("response", {}).get("body", {}).get("items", {}).get("item", [])
         
         if items:
             latest_data = items[0]
-            # crdtLoanBal: 신용거래융자 잔고 (원 단위 기준)
             if "crdtLoanBal" in latest_data:
                 val = float(latest_data["crdtLoanBal"])
-                # 원 단위를 억원 단위로 변환 (1억 = 100,000,000)
                 if val > 100000000000:
                     result["credit_balance_eok"] = int(val / 100000000)
 
-        # 협회 API에는 일일 반대매매 금액이 명시적으로 제공되지 않으므로
-        # 에러 방지를 위해 None 상태를 유지하여 차트에는 그리지 않도록 함
         print(f"  API deposit: credit={result['credit_balance_eok']}")
         
     except Exception as e:
@@ -134,11 +128,9 @@ def fetch_foreign_flow_pykrx():
         
         for date in df_kpi.index:
             date_obj = date.date()
-            # pykrx의 반환 컬럼명 대응 (외국인합계 또는 외국인)
             val_kpi = df_kpi.loc[date, '외국인합계'] if '외국인합계' in df_kpi.columns else (df_kpi.loc[date, '외국인'] if '외국인' in df_kpi.columns else 0)
             val_kdq = df_kdq.loc[date, '외국인합계'] if '외국인합계' in df_kdq.columns else (df_kdq.loc[date, '외국인'] if '외국인' in df_kdq.columns else 0)
             
-            # 원(KRW) 단위를 억원(100,000,000)으로 변환
             total_net_buy = (val_kpi + val_kdq) / 100000000
             result[date_obj] = int(total_net_buy)
             
@@ -197,6 +189,7 @@ def save_history(df):
 
 
 def update_data():
+    print(f"[{TODAY}] Fetching all data...")
     kospi = safe("kospi",  lambda: fetch_fdr("KS11", "kospi"),  default=pd.Series(dtype=float, name="kospi"))
     kosdaq = safe("kosdaq", lambda: fetch_fdr("KQ11", "kosdaq"), default=pd.Series(dtype=float, name="kosdaq"))
     samsung = safe("samsung", lambda: fetch_fdr("005930", "samsung"), default=pd.Series(dtype=float, name="samsung"))
@@ -212,7 +205,6 @@ def update_data():
     for name, tickers in SECTOR_BASKETS.items():
         sectors[f"sec_{name}"] = safe(f"sector_{name}", lambda tt=tickers: fetch_sector_basket(tt), default=pd.Series(dtype=float)).rename(f"sec_{name}")
 
-    # 네이버 대신 API와 pykrx로 완전히 교체된 수집 로직
     deposit = safe("deposit", fetch_kofia_deposit_api, default={"credit_balance_eok": None, "forced_sale_eok": None})
     foreign_flow = safe("foreign", fetch_foreign_flow_pykrx, default={})
     vkospi_today = safe("vkospi_pykrx", fetch_vkospi_pykrx, default=None)
@@ -263,7 +255,9 @@ def pct_deviation_from_ma(series, window=200):
 
 
 def compute_signals(df):
-    if df.empty: return {"kr": {}, "us": {}, "score_kr": 0, "max_kr": 18, "score_us": 0, "max_us": 15, "label_kr": "대기", "label_us": "대기"}
+    if df.empty:
+        return {"kr": {}, "us": {}, "score_kr": 0, "max_kr": 18, "score_us": 0, "max_us": 15, "label_kr": "대기", "label_us": "대기"}
+
     df = df.sort_values("date").reset_index(drop=True)
     kr, us = {}, {}
 
@@ -276,13 +270,13 @@ def compute_signals(df):
     kr["KR2"] = {"name": "신용잔고 증가율 추월", "level": 0, "description": "데이터 부족"}
     if len(kospi_ser) >= 30 and len(credit_ser) >= 30:
         kospi_30d, credit_30d = (kospi_ser.iloc[-1]/kospi_ser.iloc[-30]-1)*100, (credit_ser.iloc[-1]/credit_ser.iloc[-30]-1)*100
-        kr["KR2"] = {"name": "신용잔고 증가율 추월", "level": level_from_gap(credit_30d - kospi_30d, [0.5, 1.0, 2.0]), "description": f"코스피 {kospi_30d:+.1f}% vs 신용 {credit_30d:+.1f}%"}
+        kr["KR2"] = {"name": "신용잔고 증가율이 코스피 추월", "level": level_from_gap(credit_30d - kospi_30d, [0.5, 1.0, 2.0]), "description": f"30일 코스피 {kospi_30d:+.1f}% vs 신용 {credit_30d:+.1f}%"}
 
     both_drop = int(((pd.to_numeric(df.tail(5)["samsung_ret_pct"], errors="coerce") <= -3) & (pd.to_numeric(df.tail(5)["hynix_ret_pct"], errors="coerce") <= -3)).sum())
     kr["KR3"] = {"name": "반도체 양대장 동시 -3%", "level": 3 if both_drop >= 2 else 2 if both_drop == 1 else 0, "description": f"최근 5일 동시 -3%: {both_drop}회"}
 
     foreign_ser = pd.to_numeric(df["foreign_net_eok"], errors="coerce").dropna()
-    kr["KR4"] = {"name": "외국인 7일 순매도", "level": level_from_gap(-float(foreign_ser.tail(7).sum())/10000 if len(foreign_ser)>=7 else 0, [1.0, 3.0, 5.0]), "description": f"7일 합계 {float(foreign_ser.tail(7).sum())/10000 if len(foreign_ser)>=7 else 0:+.2f}조"}
+    kr["KR4"] = {"name": "외국인 7일 누적 순매도", "level": level_from_gap(-float(foreign_ser.tail(7).sum())/10000 if len(foreign_ser)>=7 else 0, [1.0, 3.0, 5.0]), "description": f"7영업일 합계 {float(foreign_ser.tail(7).sum())/10000 if len(foreign_ser)>=7 else 0:+.2f}조"}
 
     dev_kospi = pct_deviation_from_ma(df["kospi"], 200)
     kr["KR5"] = {"name": "코스피-200일선 괴리율", "level": level_from_gap(abs(dev_kospi) if dev_kospi else 0, [10, 20, 30]), "description": f"200일선 대비 {dev_kospi if dev_kospi else 0:+.1f}%"}
@@ -290,31 +284,181 @@ def compute_signals(df):
     v = float(pd.to_numeric(df["vkospi"], errors="coerce").dropna().iloc[-1]) if len(pd.to_numeric(df["vkospi"], errors="coerce").dropna()) else 0
     kr["KR6"] = {"name": "VKOSPI 공포지수", "level": level_from_gap(v, [20, 30, 40]), "description": f"현재 {v:.1f}"}
 
+    sp500_ser = pd.to_numeric(df["sp500"], errors="coerce").dropna()
+    us["US1"] = {"name": "S&P500 일간 변동성", "level": 0, "description": "데이터 부족"}
+    if len(sp500_ser) >= 2:
+        ret = (sp500_ser.iloc[-1] / sp500_ser.iloc[-2] - 1) * 100
+        us["US1"] = {"name": "S&P500 전일 대비", "level": level_from_gap(abs(ret), [1, 2, 3]), "description": f"전일 대비 {ret:+.2f}%"}
+
+    dev_nas = pct_deviation_from_ma(df["nasdaq"], 200)
+    us["US2"] = {"name": "나스닥-200일선 괴리율", "level": level_from_gap(abs(dev_nas) if dev_nas else 0, [10, 20, 30]), "description": f"200일선 대비 {dev_nas if dev_nas else 0:+.1f}%"}
+
+    v_vix = float(pd.to_numeric(df["vix"], errors="coerce").dropna().iloc[-1]) if len(pd.to_numeric(df["vix"], errors="coerce").dropna()) else 0
+    us["US3"] = {"name": "VIX 공포지수", "level": level_from_gap(v_vix, [20, 30, 40]), "description": f"현재 {v_vix:.1f}"}
+
+    nvda_ser = pd.to_numeric(df["nvda"], errors="coerce").dropna()
+    us["US4"] = {"name": "엔비디아 일간", "level": 0, "description": "데이터 부족"}
+    if len(nvda_ser) >= 2:
+        ret = (nvda_ser.iloc[-1] / nvda_ser.iloc[-2] - 1) * 100
+        us["US4"] = {"name": "엔비디아 전일 대비", "level": level_from_gap(abs(ret), [3, 5, 8]), "description": f"전일 대비 {ret:+.2f}%"}
+
+    ust_ser = pd.to_numeric(df["ust10y"], errors="coerce").dropna()
+    us["US5"] = {"name": "10년물 국채금리 1주 변화", "level": 0, "description": "데이터 부족"}
+    if len(ust_ser) >= 5:
+        delta = float(ust_ser.iloc[-1] - ust_ser.iloc[-5])
+        cur = float(ust_ser.iloc[-1])
+        us["US5"] = {"name": "10년물 국채금리 1주 변화", "level": level_from_gap(abs(delta) * 100, [15, 25, 40]), "description": f"현재 {cur:.2f}% / 1주 변화 {delta*100:+.0f}bp"}
+
     kr_score = sum(s["level"] for s in kr.values())
-    
+    us_score = sum(s["level"] for s in us.values())
+
     def label(score, maxi):
         pct = score / maxi if maxi else 0
-        return "위험" if pct >= 0.7 else "경고" if pct >= 0.5 else "경계" if pct >= 0.3 else "주의" if pct >= 0.15 else "평상"
+        if pct >= 0.7: return "위험"
+        if pct >= 0.5: return "경고"
+        if pct >= 0.3: return "경계"
+        if pct >= 0.15: return "주의"
+        return "평상"
 
-    return {"kr": kr, "us": {}, "score_kr": kr_score, "max_kr": len(kr) * 3, "score_us": 0, "max_us": 15, "label_kr": label(kr_score, len(kr)*3), "label_us": "대기"}
+    return {
+        "kr": kr, "us": us, "score_kr": kr_score, "max_kr": len(kr) * 3,
+        "score_us": us_score, "max_us": len(us) * 3,
+        "label_kr": label(kr_score, len(kr) * 3), "label_us": label(us_score, len(us) * 3),
+    }
 
 
 def compute_regime(index_series):
     s = pd.to_numeric(index_series, errors="coerce").dropna()
-    res = {"short": {"label": "대기", "score": 0, "reasons": []}, "mid": {"label": "대기", "score": 0, "reasons": []}, "long": {"label": "대기", "score": 0, "reasons": []}}
-    if len(s) < 200: return res
-    cur, ma50, ma200 = s.iloc[-1], s.rolling(50).mean().iloc[-1], s.rolling(200).mean().iloc[-1]
-    
-    ret30d = (cur / s.iloc[-30] - 1) * 100
-    res["short"]["score"] = 2 if ret30d > 5 else 1 if ret30d > 2 else -2 if ret30d < -5 else -1 if ret30d < -2 else 0
-    
-    res["mid"]["score"] = 2 if ma50 > ma200 * 1.02 else 1 if ma50 > ma200 else -2 if ma50 < ma200 * 0.98 else -1
-    
-    ma200_slope = (ma200 / s.rolling(200).mean().iloc[-31] - 1) * 100 if len(s) > 230 else 0
-    res["long"]["score"] = 2 if ma200_slope > 3 else 1 if ma200_slope > 0 else -2 if ma200_slope < -3 else -1
+    result = {
+        "short": {"label": "대기", "score": 0, "reasons": []},
+        "mid":   {"label": "대기", "score": 0, "reasons": []},
+        "long":  {"label": "대기", "score": 0, "reasons": []},
+    }
+    if len(s) < 200:
+        return result
 
-    for k in res: res[k]["label"] = "강세" if res[k]["score"] >= 2 else "약한 강세" if res[k]["score"] >= 1 else "약세" if res[k]["score"] <= -2 else "약한 약세" if res[k]["score"] <= -1 else "중립"
-    return res
+    cur = s.iloc[-1]
+    ma50 = s.rolling(50).mean().iloc[-1]
+    ma200 = s.rolling(200).mean().iloc[-1]
+    ma50_20prev = s.rolling(50).mean().iloc[-21] if len(s) > 220 else ma50
+    ma200_30prev = s.rolling(200).mean().iloc[-31] if len(s) > 230 else ma200
+    high52w = s.tail(252).max() if len(s) >= 252 else s.max()
+    low52w = s.tail(252).min() if len(s) >= 252 else s.min()
+
+    short_score = 0
+    ret30d = (cur / s.iloc[-30] - 1) * 100 if len(s) >= 30 else 0
+    if ret30d > 5:
+        short_score += 2; result["short"]["reasons"].append(f"최근 30일 +{ret30d:.1f}% (강한 상승)")
+    elif ret30d > 2:
+        short_score += 1; result["short"]["reasons"].append(f"최근 30일 +{ret30d:.1f}%")
+    elif ret30d < -5:
+        short_score -= 2; result["short"]["reasons"].append(f"최근 30일 {ret30d:.1f}% (강한 하락)")
+    elif ret30d < -2:
+        short_score -= 1; result["short"]["reasons"].append(f"최근 30일 {ret30d:.1f}%")
+    else:
+        result["short"]["reasons"].append(f"최근 30일 {ret30d:+.1f}% (보합)")
+
+    ma50_slope = (ma50 / ma50_20prev - 1) * 100 if ma50_20prev else 0
+    if ma50_slope > 2:
+        short_score += 1; result["short"]["reasons"].append(f"50일선 우상향 +{ma50_slope:.1f}%")
+    elif ma50_slope < -2:
+        short_score -= 1; result["short"]["reasons"].append(f"50일선 우하향 {ma50_slope:.1f}%")
+
+    mid_score = 0
+    if ma50 > ma200 * 1.02:
+        mid_score += 2; result["mid"]["reasons"].append("50일선이 200일선 위 (골든크로스 유지)")
+    elif ma50 > ma200:
+        mid_score += 1; result["mid"]["reasons"].append("50일선이 200일선 약간 위")
+    elif ma50 < ma200 * 0.98:
+        mid_score -= 2; result["mid"]["reasons"].append("50일선이 200일선 아래 (데드크로스)")
+    else:
+        mid_score -= 1; result["mid"]["reasons"].append("50일선이 200일선 약간 아래")
+
+    if len(s) >= 63:
+        ret3m = (cur / s.iloc[-63] - 1) * 100
+        if ret3m > 10:
+            mid_score += 1; result["mid"]["reasons"].append(f"3개월 +{ret3m:.1f}%")
+        elif ret3m < -10:
+            mid_score -= 1; result["mid"]["reasons"].append(f"3개월 {ret3m:.1f}%")
+
+    long_score = 0
+    ma200_slope = (ma200 / ma200_30prev - 1) * 100 if ma200_30prev else 0
+    if ma200_slope > 3:
+        long_score += 2; result["long"]["reasons"].append(f"200일선 상승 +{ma200_slope:.1f}%")
+    elif ma200_slope > 0:
+        long_score += 1; result["long"]["reasons"].append(f"200일선 완만 상승 +{ma200_slope:.1f}%")
+    elif ma200_slope < -3:
+        long_score -= 2; result["long"]["reasons"].append(f"200일선 하락 {ma200_slope:.1f}%")
+    else:
+        long_score -= 1; result["long"]["reasons"].append(f"200일선 정체 {ma200_slope:+.1f}%")
+
+    pos_52w = (cur - low52w) / (high52w - low52w) if high52w > low52w else 0.5
+    if pos_52w > 0.85:
+        long_score += 1; result["long"]["reasons"].append(f"52주 고점 근처 ({pos_52w*100:.0f}%)")
+    elif pos_52w < 0.15:
+        long_score -= 1; result["long"]["reasons"].append(f"52주 저점 근처 ({pos_52w*100:.0f}%)")
+    else:
+        result["long"]["reasons"].append(f"52주 범위 {pos_52w*100:.0f}% 지점")
+
+    def label(score):
+        if score >= 2: return "강세"
+        if score >= 1: return "약한 강세"
+        if score <= -2: return "약세"
+        if score <= -1: return "약한 약세"
+        return "중립"
+
+    result["short"]["score"] = short_score
+    result["short"]["label"] = label(short_score)
+    result["mid"]["score"] = mid_score
+    result["mid"]["label"] = label(mid_score)
+    result["long"]["score"] = long_score
+    result["long"]["label"] = label(long_score)
+    return result
+
+
+COLOR = {
+    "평상": "#1D9E75", "주의": "#BA7517", "경계": "#D85A30",
+    "경고": "#A32D2D", "위험": "#501313", "대기": "#888"
+}
+
+REGIME_COLOR = {
+    "강세": "#1D9E75", "약한 강세": "#97C459",
+    "중립": "#888780",
+    "약한 약세": "#EF9F27", "약세": "#A32D2D",
+    "대기": "#aaa"
+}
+
+
+def lvl_style(lvl):
+    colors = ["#1D9E75", "#BA7517", "#D85A30", "#A32D2D"]
+    labels = ["안전", "주의", "경계", "경고"]
+    return colors[min(lvl, 3)], labels[min(lvl, 3)]
+
+
+def render_regime_block(regime, title):
+    horizons = [
+        ("short", "단기 (1~3개월)"),
+        ("mid",   "중기 (3~6개월)"),
+        ("long",  "장기 (6~12개월)"),
+    ]
+    cards = []
+    for key, label in horizons:
+        r = regime.get(key, {"label": "대기", "score": 0, "reasons": []})
+        color = REGIME_COLOR.get(r["label"], "#888")
+        reasons_html = "<br>".join(f"· {x}" for x in r["reasons"]) if r["reasons"] else "· 데이터 수집 중"
+        cards.append(f"""
+        <div class="regime-card" style="border-top-color: {color};">
+          <div class="regime-name">{label}</div>
+          <div class="regime-value" style="color: {color};">{r['label']}</div>
+          <div class="regime-score">점수 {r['score']:+d}</div>
+          <div class="regime-reasons">{reasons_html}</div>
+        </div>""")
+    return f"""
+      <div class="regime-block">
+        <div class="regime-title">{title}</div>
+        <div class="regime-grid">{"".join(cards)}</div>
+      </div>
+    """
 
 
 def render_dashboard(df, signals, regime_kr, regime_us):
@@ -325,70 +469,285 @@ def render_dashboard(df, signals, regime_kr, regime_us):
         s = pd.to_numeric(df_plot[c], errors="coerce").ffill().bfill()
         return [None if pd.isna(x) else round(x, 2) for x in s]
 
+    def ma_series(c, window=200):
+        if df.empty or c not in df.columns: return []
+        full = pd.to_numeric(df[c], errors="coerce").ffill().bfill()
+        ma_full = full.rolling(window).mean()
+        ma_plot = ma_full.loc[df_plot.index]
+        return [None if pd.isna(x) else round(x, 2) for x in ma_plot]
+
     js_data = {
         "dates": [d.strftime("%Y-%m-%d") for d in df_plot["date"]] if not df_plot.empty else [],
-        "kospi": col("kospi"), "kosdaq": col("kosdaq"),
+        "kospi": col("kospi"), "kospi_ma200": ma_series("kospi", 200),
+        "kosdaq": col("kosdaq"),
         "samsung": col("samsung"), "hynix": col("hynix"),
-        "vkospi": col("vkospi"), "credit": col("credit_balance_eok"), 
-        "forced": col("forced_sale_eok"), "foreign": col("foreign_net_eok"),
-        "sec_반도체": col("sec_반도체"), "sec_방산조선": col("sec_방산조선"),
-        "sec_바이오": col("sec_바이오"), "sec_2차전지": col("sec_2차전지"), "sec_금융": col("sec_금융"),
+        "vkospi": col("vkospi"),
+        "credit": col("credit_balance_eok"), 
+        "forced": col("forced_sale_eok"), 
+        "foreign": col("foreign_net_eok"),
+        "sp500": col("sp500"), "sp500_ma200": ma_series("sp500", 200),
+        "nasdaq": col("nasdaq"), "nasdaq_ma200": ma_series("nasdaq", 200),
+        "vix": col("vix"), "nvda": col("nvda"), "ust10y": col("ust10y"),
+        "sec_반도체": col("sec_반도체"),
+        "sec_방산조선": col("sec_방산조선"),
+        "sec_바이오": col("sec_바이오"),
+        "sec_2차전지": col("sec_2차전지"),
+        "sec_금융": col("sec_금융"),
     }
+
+    last_date = df_plot["date"].iloc[-1].strftime("%Y년 %m월 %d일") if not df_plot.empty else "대기"
+
+    kr_color = COLOR.get(signals["label_kr"], "#888")
+    us_color = COLOR.get(signals["label_us"], "#888")
+
+    def render_signals(sigs):
+        cards = []
+        for key, sig in sigs.items():
+            c, l = lvl_style(sig["level"])
+            cards.append(f"""
+  <div class="sig" style="border-color: {c}">
+    <div class="sig-name">{key}. {sig['name']}</div>
+    <div class="sig-status" style="color: {c}">{l}</div>
+    <div class="sig-desc">{sig['description']}</div>
+  </div>""")
+        return "\n".join(cards)
+
+    kr_cards = render_signals(signals["kr"])
+    us_cards = render_signals(signals["us"])
+    regime_kr_html = render_regime_block(regime_kr, "코스피 추세 전망")
+    regime_us_html = render_regime_block(regime_us, "S&P 500 추세 전망")
 
     html = f"""<!DOCTYPE html>
 <html lang="ko">
-<head><meta charset="UTF-8"><title>빚투 모니터</title><script src="https://cdn.jsdelivr.net/npm/plotly.js@2.35.2/dist/plotly.min.js"></script>
-<style>body {{ font-family: system-ui; max-width: 1200px; margin: 0 auto; padding: 24px; background: #fafafa; }} .chart {{ background: white; padding: 14px; border-radius: 12px; margin-bottom: 14px; }}</style>
-</head><body>
-<h2>빚투 모니터 (한국장)</h2>
-  <div class="chart"><div id="c_kr_idx" style="height:300px;"></div></div>
-  <div class="chart"><div id="c_kr_vkospi" style="height:300px;"></div></div>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>빚투 모니터 — 추세 전망 & 위험 신호</title>
+<script src="https://cdn.jsdelivr.net/npm/plotly.js@2.35.2/dist/plotly.min.js"></script>
+<style>
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+         max-width: 1200px; margin: 0 auto; padding: 24px; color: #222; background: #fafafa; }}
+  h1 {{ font-size: 26px; font-weight: 600; margin: 0 0 6px; }}
+  .meta {{ color: #888; font-size: 13px; margin-bottom: 20px; }}
+  .tabs {{ display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 2px solid #eee; }}
+  .tab {{ padding: 12px 22px; cursor: pointer; font-weight: 500; font-size: 15px; color: #666;
+          border-bottom: 2px solid transparent; margin-bottom: -2px; }}
+  .tab.active {{ color: #222; border-bottom-color: #222; }}
+  .pane {{ display: none; }}
+  .pane.active {{ display: block; }}
+  .overall {{ background: white; padding: 18px 22px; border-radius: 12px; margin-bottom: 20px;
+              display: flex; justify-content: space-between; align-items: center; }}
+  .overall-label {{ font-size: 13px; color: #888; }}
+  .overall-value {{ font-size: 28px; font-weight: 600; }}
+  .regime-block {{ background: white; padding: 18px 20px; border-radius: 12px; margin-bottom: 20px; }}
+  .regime-title {{ font-size: 15px; font-weight: 600; margin-bottom: 14px; color: #333; }}
+  .regime-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }}
+  @media (max-width: 768px) {{ .regime-grid {{ grid-template-columns: 1fr; }} }}
+  .regime-card {{ background: #fafafa; padding: 14px 16px; border-radius: 10px; border-top: 4px solid; }}
+  .regime-name {{ font-size: 12px; color: #888; margin-bottom: 4px; }}
+  .regime-value {{ font-size: 20px; font-weight: 600; margin-bottom: 2px; }}
+  .regime-score {{ font-size: 11px; color: #aaa; margin-bottom: 8px; }}
+  .regime-reasons {{ font-size: 12px; color: #555; line-height: 1.6; }}
+  .signal-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+                   gap: 12px; margin-bottom: 20px; }}
+  .sig {{ background: white; padding: 14px 16px; border-radius: 10px; border-top: 4px solid; }}
+  .sig-name {{ font-size: 12px; color: #888; margin-bottom: 4px; }}
+  .sig-status {{ font-size: 17px; font-weight: 600; margin-bottom: 6px; }}
+  .sig-desc {{ font-size: 12px; color: #555; line-height: 1.4; }}
+  .chart {{ background: white; padding: 14px; border-radius: 12px; margin-bottom: 14px; }}
+  .chart-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }}
+  @media (max-width: 768px) {{ .chart-grid {{ grid-template-columns: 1fr; }} }}
+  .section-title {{ font-size: 16px; font-weight: 600; margin: 24px 0 10px; color: #444; }}
+  .footer {{ font-size: 11px; color: #aaa; margin-top: 32px; padding-top: 16px; border-top: 1px solid #eee; }}
+</style>
+</head>
+<body>
+<h1>빚투 모니터</h1>
+<div class="meta">시장 추세 전망 & 위험 신호 · 업데이트 {last_date}</div>
+
+<div class="tabs">
+  <div class="tab active" data-tab="kr">🇰🇷 한국장 ({signals['label_kr']})</div>
+  <div class="tab" data-tab="us">🇺🇸 미국장 ({signals['label_us']})</div>
+</div>
+
+<div id="pane-kr" class="pane active">
+  {regime_kr_html}
+
+  <div class="section-title">단기 위험 신호 (일간)</div>
+  <div class="overall" style="border-left: 6px solid {kr_color};">
+    <div>
+      <div class="overall-label">한국 위험도 점수</div>
+      <div class="overall-value" style="color: {kr_color};">{signals['label_kr']}</div>
+    </div>
+    <div style="font-size: 14px; color: #888;">{signals['score_kr']} / {signals['max_kr']}점</div>
+  </div>
+
+  <div class="signal-grid">{kr_cards}</div>
+
+  <div class="section-title">차트</div>
+  <div class="chart-grid">
+    <div class="chart"><div id="c_kr_idx" style="height:300px;"></div></div>
+    <div class="chart"><div id="c_kr_vkospi" style="height:300px;"></div></div>
+  </div>
   <div class="chart"><div id="c_kr_credit" style="height:300px;"></div></div>
+  <div class="chart"><div id="c_kr_forced" style="height:280px;"></div></div>
   <div class="chart"><div id="c_kr_foreign" style="height:300px;"></div></div>
   <div class="chart"><div id="c_kr_semi" style="height:280px;"></div></div>
   <div class="chart"><div id="c_kr_sector" style="height:320px;"></div></div>
+</div>
+
+<div id="pane-us" class="pane">
+  {regime_us_html}
+
+  <div class="section-title">단기 위험 신호 (일간)</div>
+  <div class="overall" style="border-left: 6px solid {us_color};">
+    <div>
+      <div class="overall-label">미국 위험도 점수</div>
+      <div class="overall-value" style="color: {us_color};">{signals['label_us']}</div>
+    </div>
+    <div style="font-size: 14px; color: #888;">{signals['score_us']} / {signals['max_us']}점</div>
+  </div>
+
+  <div class="signal-grid">{us_cards}</div>
+
+  <div class="section-title">차트</div>
+  <div class="chart-grid">
+    <div class="chart"><div id="c_us_sp" style="height:300px;"></div></div>
+    <div class="chart"><div id="c_us_nasdaq" style="height:300px;"></div></div>
+  </div>
+  <div class="chart-grid">
+    <div class="chart"><div id="c_us_vix" style="height:280px;"></div></div>
+    <div class="chart"><div id="c_us_nvda" style="height:280px;"></div></div>
+  </div>
+  <div class="chart"><div id="c_us_rate" style="height:280px;"></div></div>
+</div>
+
+<div class="footer">
+  데이터: FinanceDataReader, FRED(미국 10Y), 한국거래소(pykrx), 공공데이터포털(금융투자협회 API)
+</div>
+
 <script>
 const D = {json.dumps(js_data, ensure_ascii=False)};
-const base = {{ margin: {{t: 30, r: 45, b: 35, l: 50}}, font: {{family: 'system-ui'}}, paper_bgcolor: 'white', plot_bgcolor: 'white' }};
-function plot(id, traces, title) {{ Plotly.newPlot(id, traces, {{...base, title: {{text: title}}}}); }}
+const base = {{
+  margin: {{t: 30, r: 45, b: 35, l: 50}}, font: {{family: 'system-ui'}},
+  paper_bgcolor: 'white', plot_bgcolor: 'white',
+  legend: {{orientation: 'h', y: -0.2}}
+}};
+
+function plot(id, traces, title, extra) {{
+  if (!D.dates.length) {{
+    document.getElementById(id).innerHTML = '<p style="text-align:center;color:#888;padding:40px;">데이터 대기</p>';
+    return;
+  }}
+  Plotly.newPlot(id, traces, {{...base, title: {{text: title, font: {{size: 13}}}}, ...(extra || {{}})}});
+}}
 
 function normalize(arr) {{
-  const valid = arr.filter(v => v !== null && v !== 0);
+  const valid = arr.filter(v => v !== null && v !== 0 && !isNaN(v));
   const first = valid.length > 0 ? valid[0] : 1;
-  return arr.map(v => (v !== null && v !== 0) ? (v / first) * 100 : null);
+  return arr.map(v => (v !== null && v !== 0 && !isNaN(v)) ? (v / first) * 100 : null);
 }}
 
 plot('c_kr_idx', [
-  {{x: D.dates, y: D.kospi, type: 'scatter', name: '코스피', line: {{color: '#185FA5'}}}},
-  {{x: D.dates, y: D.kosdaq, type: 'scatter', name: '코스닥', yaxis: 'y2', line: {{color: '#534AB7'}}}}
-], '코스피 & 코스닥');
+  {{x: D.dates, y: D.kospi, type: 'scatter', mode: 'lines', name: '코스피', line: {{color: '#185FA5', width: 2}}}},
+  {{x: D.dates, y: D.kospi_ma200, type: 'scatter', mode: 'lines', name: '200일선', line: {{color: '#A32D2D', width: 1.5, dash: 'dash'}}}},
+  {{x: D.dates, y: D.kosdaq, type: 'scatter', mode: 'lines', name: '코스닥', yaxis: 'y2', line: {{color: '#534AB7', width: 2}}}}
+], '코스피 + 200일선 & 코스닥', {{yaxis: {{title: '코스피'}}, yaxis2: {{title: '코스닥', overlaying: 'y', side: 'right'}}}});
 
-plot('c_kr_vkospi', [{{x: D.dates, y: D.vkospi, type: 'scatter', fill: 'tozeroy', name: 'VKOSPI', line: {{color: '#A32D2D'}}}}], 'VKOSPI 공포지수');
+plot('c_kr_vkospi', [
+  {{x: D.dates, y: D.vkospi, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VKOSPI',
+    line: {{color: '#A32D2D'}}, fillcolor: 'rgba(163,45,45,0.1)'}}
+], 'VKOSPI 공포지수', {{
+  shapes: [
+    {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 20, y1: 20, line: {{color: '#BA7517', width: 1, dash: 'dot'}}}},
+    {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 30, y1: 30, line: {{color: '#A32D2D', width: 1, dash: 'dot'}}}}
+  ]
+}});
+
 plot('c_kr_credit', [
-  {{x: D.dates, y: D.kospi, type: 'scatter', name: '코스피', line: {{color: '#185FA5'}}}},
-  {{x: D.dates, y: D.credit, type: 'scatter', name: '신용잔고', yaxis: 'y2', line: {{color: '#993C1D'}}}}
-], '코스피 vs 신용잔고(억)');
+  {{x: D.dates, y: D.kospi, type: 'scatter', mode: 'lines', name: '코스피', line: {{color: '#185FA5', width: 2}}}},
+  {{x: D.dates, y: D.credit, type: 'scatter', mode: 'lines', name: '신용잔고(억)', yaxis: 'y2', line: {{color: '#993C1D', width: 2, dash: 'dash'}}}}
+], '코스피 vs 신용잔고', {{yaxis: {{title: '코스피'}}, yaxis2: {{title: '잔고(억)', overlaying: 'y', side: 'right'}}}});
 
-plot('c_kr_foreign', [{{x: D.dates, y: D.foreign, type: 'bar', name: '외국인'}}], '외국인 순매수(억)');
+plot('c_kr_forced', [{{
+  x: D.dates, y: D.forced, type: 'bar', name: '반대매매(억)',
+  marker: {{color: D.forced.map(v => v >= 600 ? '#A32D2D' : v >= 400 ? '#D85A30' : v >= 200 ? '#BA7517' : '#888')}}
+}}], '일일 반대매매');
 
+plot('c_kr_foreign', [{{
+  x: D.dates, y: D.foreign, type: 'bar', name: '외국인(억)',
+  marker: {{color: D.foreign.map(v => v < 0 ? '#A32D2D' : '#1D9E75')}}
+}}], '외국인 일별 순매수/매도 (코스피+코스닥)');
+
+// 반도체 양대장: 누적 추세선 (Base 100) 적용
 plot('c_kr_semi', [
-  {{x: D.dates, y: normalize(D.kospi), type: 'scatter', name: '코스피', line: {{color: '#888', dash: 'dot'}}}},
-  {{x: D.dates, y: normalize(D.samsung), type: 'scatter', name: '삼성전자', line: {{color: '#185FA5'}}}},
-  {{x: D.dates, y: normalize(D.hynix), type: 'scatter', name: 'SK하이닉스', line: {{color: '#534AB7'}}}}
-], '반도체 누적 추세 (Base 100)');
+  {{x: D.dates, y: normalize(D.kospi), type: 'scatter', mode: 'lines', name: '코스피', line: {{color: '#888', width: 2, dash: 'dot'}}}},
+  {{x: D.dates, y: normalize(D.samsung), type: 'scatter', mode: 'lines', name: '삼성전자', line: {{color: '#185FA5', width: 2}}}},
+  {{x: D.dates, y: normalize(D.hynix), type: 'scatter', mode: 'lines', name: 'SK하이닉스', line: {{color: '#534AB7', width: 2}}}}
+], '코스피 vs 반도체 양대장 추세 (Base 100)');
 
+// 업종 바구니: 누적 추세선 (Base 100) 적용
 plot('c_kr_sector', [
-  {{x: D.dates, y: D.sec_반도체, type: 'scatter', name: '반도체'}},
-  {{x: D.dates, y: D.sec_방산조선, type: 'scatter', name: '방산조선'}},
-  {{x: D.dates, y: D.sec_바이오, type: 'scatter', name: '바이오'}},
-  {{x: D.dates, y: D.sec_2차전지, type: 'scatter', name: '2차전지'}}
+  {{x: D.dates, y: D.sec_반도체, type: 'scatter', mode: 'lines', name: '반도체', line: {{color: '#185FA5'}}}},
+  {{x: D.dates, y: D.sec_방산조선, type: 'scatter', mode: 'lines', name: '방산조선', line: {{color: '#534AB7'}}}},
+  {{x: D.dates, y: D.sec_바이오, type: 'scatter', mode: 'lines', name: '바이오', line: {{color: '#1D9E75'}}}},
+  {{x: D.dates, y: D.sec_2차전지, type: 'scatter', mode: 'lines', name: '2차전지', line: {{color: '#BA7517'}}}},
+  {{x: D.dates, y: D.sec_금융, type: 'scatter', mode: 'lines', name: '금융', line: {{color: '#888'}}}}
 ], '업종 바구니 누적 추세 (Base 100)');
-</script></body></html>"""
+
+plot('c_us_sp', [
+  {{x: D.dates, y: D.sp500, type: 'scatter', mode: 'lines', name: 'S&P 500', line: {{color: '#185FA5', width: 2}}}},
+  {{x: D.dates, y: D.sp500_ma200, type: 'scatter', mode: 'lines', name: '200일선', line: {{color: '#A32D2D', width: 1.5, dash: 'dash'}}}}
+], 'S&P 500 + 200일선');
+
+plot('c_us_nasdaq', [
+  {{x: D.dates, y: D.nasdaq, type: 'scatter', mode: 'lines', name: '나스닥', line: {{color: '#534AB7', width: 2}}}},
+  {{x: D.dates, y: D.nasdaq_ma200, type: 'scatter', mode: 'lines', name: '200일선', line: {{color: '#A32D2D', width: 1.5, dash: 'dash'}}}}
+], '나스닥 + 200일선');
+
+plot('c_us_vix', [
+  {{x: D.dates, y: D.vix, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VIX',
+    line: {{color: '#A32D2D'}}, fillcolor: 'rgba(163,45,45,0.1)'}}
+], 'VIX 공포지수');
+
+plot('c_us_nvda', [
+  {{x: D.dates, y: D.nvda, type: 'scatter', mode: 'lines', name: 'NVDA', line: {{color: '#1D9E75', width: 2}}}}
+], '엔비디아');
+
+plot('c_us_rate', [
+  {{x: D.dates, y: D.ust10y, type: 'scatter', mode: 'lines', name: '10Y', line: {{color: '#BA7517', width: 2}}}}
+], '미국 10년물 국채금리 (%)');
+
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', e => {{
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+  document.querySelectorAll('.pane').forEach(x => x.classList.remove('active'));
+  e.target.classList.add('active');
+  document.getElementById('pane-' + e.target.dataset.tab).classList.add('active');
+  setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
+}}));
+</script>
+</body>
+</html>
+"""
     (DOCS_DIR / "index.html").write_text(html, encoding="utf-8")
 
+
 def main():
-    df = update_data()
-    render_dashboard(df, compute_signals(df), compute_regime(df["kospi"]), {})
+    try:
+        df = update_data()
+    except Exception as e:
+        print(f"[error] update_data fatal: {e}")
+        df = load_history()
+
+    signals = compute_signals(df)
+    regime_kr = compute_regime(df["kospi"]) if not df.empty else {}
+    regime_us = compute_regime(df["sp500"]) if not df.empty else {}
+
+    try:
+        render_dashboard(df, signals, regime_kr, regime_us)
+    except Exception as e:
+        print(f"[error] render_dashboard: {e}")
+
 
 if __name__ == "__main__":
     main()
