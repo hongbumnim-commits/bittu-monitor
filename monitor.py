@@ -417,6 +417,110 @@ def fetch_naver_deposit():
     return result
 
 
+def fetch_krx_foreign_investor_flow(days=LOOKBACK_DAYS):
+    """
+    KRX data.krx.co.kr JSON API로 외국인 순매수 일별 데이터 받기.
+    로그인 불필요, 무료. pykrx와 같은 엔드포인트 사용.
+    
+    URL: http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd
+    bld: dbms/MDC/STAT/standard/MDCSTAT02201 (투자자별 거래실적)
+    
+    Returns: {date: foreign_net_eok}
+    """
+    url = "http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "Origin": "http://data.krx.co.kr",
+        "Referer": "http://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC0201020203",
+        "X-Requested-With": "XMLHttpRequest",
+    }
+    today = dt.date.today()
+    start = today - dt.timedelta(days=days)
+    end_str = today.strftime("%Y%m%d")
+    start_str = start.strftime("%Y%m%d")
+    
+    result = {}
+    # 코스피(STK) + 코스닥(KSQ) 각각 조회 후 합산
+    for mkt_id, mkt_name in [("STK", "코스피"), ("KSQ", "코스닥")]:
+        data = {
+            "bld": "dbms/MDC/STAT/standard/MDCSTAT02202",  # 투자자별 거래실적 - 기간별
+            "inqTpCd": "2",       # 2=기간합계
+            "trdVolVal": "2",     # 2=거래대금 (1=거래량)
+            "askBid": "3",        # 3=순매수 (1=매도, 2=매수)
+            "mktId": mkt_id,
+            "strtDd": start_str,
+            "endDd": end_str,
+            "detailView": "1",
+            "share": "1",
+            "money": "1",
+            "csvxls_isNo": "false",
+        }
+        try:
+            r = requests.post(url, headers=headers, data=data, timeout=20)
+            if r.status_code != 200:
+                print(f"  [warn] krx {mkt_name}: status {r.status_code}")
+                continue
+            try:
+                j = r.json()
+            except Exception:
+                print(f"  [warn] krx {mkt_name}: json parse failed")
+                continue
+            # 응답 구조: {"output": [{"TRD_DD": "2026/04/17", "FORN_NETPUR_TRDVAL": "123,456,789", ...}, ...]}
+            rows = j.get("output", []) or j.get("OutBlock_1", [])
+            if not rows:
+                print(f"  [info] krx {mkt_name}: empty output")
+                continue
+            for row in rows:
+                # 날짜: "TRD_DD" 또는 "TRD_DATE"
+                date_str = row.get("TRD_DD") or row.get("TRD_DATE") or row.get("BAS_DD")
+                if not date_str:
+                    continue
+                try:
+                    # "2026/04/17" 또는 "20260417" 파싱
+                    if "/" in date_str:
+                        d = dt.datetime.strptime(date_str, "%Y/%m/%d").date()
+                    elif "-" in date_str:
+                        d = dt.datetime.strptime(date_str, "%Y-%m-%d").date()
+                    else:
+                        d = dt.datetime.strptime(date_str, "%Y%m%d").date()
+                except ValueError:
+                    continue
+                # 외국인 순매수 대금: FORN_NETPUR_TRDVAL (거래대금 원단위)
+                # 키 이름이 변형 있을 수 있어 여러개 시도
+                val_raw = None
+                for key in ["FORN_NETPUR_TRDVAL", "FORN_NET_TRDVAL", "FRGN_NETPUR", "FRGN_NET_TRDVAL"]:
+                    if key in row and row[key]:
+                        val_raw = row[key]
+                        break
+                if val_raw is None:
+                    # row의 값 중 숫자가 큰 것 중 "외국인" 키워드가 있는 컬럼 찾기 (동적)
+                    continue
+                try:
+                    # "123,456,789" → 억원 단위로 변환 (원래 원 단위)
+                    val = float(str(val_raw).replace(",", "").replace(" ", ""))
+                    eok = val / 1e8  # 원 → 억원
+                    if d in result:
+                        result[d] += eok
+                    else:
+                        result[d] = eok
+                except (ValueError, TypeError):
+                    continue
+            print(f"  krx foreign {mkt_name}: {len(rows)} rows fetched")
+        except Exception as e:
+            print(f"  [warn] krx foreign {mkt_name}: {e}")
+            continue
+    
+    # 결과 반올림
+    result = {d: round(v, 1) for d, v in result.items()}
+    if result:
+        latest = max(result.keys())
+        print(f"  foreign flow (krx): {len(result)} days, latest {latest}: {result[latest]:+.0f}억")
+    return result
+
+
 def fetch_naver_foreign_flow():
     """네이버 투자자 매매동향 스크래핑. 여러 엔드포인트 & UA 시도."""
     urls = [
@@ -523,13 +627,25 @@ def fetch_hankyung_foreign_flow():
 
 
 def fetch_foreign_flow_combined():
-    """여러 소스 순차 시도."""
+    """여러 소스 순차 시도 — KRX 최우선 (공식 JSON API)."""
+    # 1) KRX 공식 JSON API (로그인 불필요, 가장 신뢰)
+    try:
+        result = fetch_krx_foreign_investor_flow()
+        if result and len(result) >= 3:
+            return result
+    except Exception as e:
+        print(f"  [info] krx foreign failed: {e}")
+    
+    # 2) 네이버 폴백
     result = fetch_naver_foreign_flow()
     if result:
         return result
+    
+    # 3) 한경 폴백
     result = fetch_hankyung_foreign_flow()
     if result:
         return result
+    
     print(f"  [warn] foreign flow: all sources failed")
     return {}
 
@@ -2185,28 +2301,10 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
       .filter(x => x.last !== undefined && x.last !== null)
       .sort((a, b) => b.last - a.last);
 
-    // 랭킹 박스: shapes로 배경 + annotations로 텍스트
-    const lineHeight = 0.038;  // 줄 간격 (paper 좌표)
+    // 랭킹 annotations — 박스 없이 텍스트만, 각 줄 색 = 라인 색
+    const lineHeight = 0.038;
     const boxTop = 0.985;
     const boxLeft = 0.012;
-    const boxPadTop = 0.020;   // 위쪽 여백
-    const boxPadBot = 0.022;   // 아래쪽 여백 (첫 줄 아래로 좀 더 많이)
-    const boxWidth = 0.22;     // 박스 너비 (paper 좌표)
-
-    // 박스 shape (배경) — 11줄 전부 감싸도록 동적 높이
-    const rankShape = {{
-      type: 'rect',
-      xref: 'paper', yref: 'paper',
-      x0: boxLeft - 0.006,
-      x1: boxLeft + boxWidth,
-      y0: boxTop - (ranking.length - 1) * lineHeight - boxPadBot,
-      y1: boxTop + boxPadTop,
-      fillcolor: 'rgba(255,255,255,0.95)',
-      line: {{color: '#D1D5DB', width: 1}},
-      layer: 'above'
-    }};
-
-    // 각 순위 텍스트 (색 = 라인 색과 정확히 일치)
     const rankAnnotations = [];
     ranking.forEach((x, i) => {{
       const color = colorMap[x.key] || '#333';
@@ -2227,7 +2325,6 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
       legend: {{orientation: 'h', y: -0.08, x: 0.5, xanchor: 'center', font: {{size: 12}}}},
       margin: {{t: 60, r: 40, b: 90, l: 60}},
       annotations: rankAnnotations,
-      shapes: [rankShape],
       hovermode: 'x unified'
     }}), {{displayModeBar: false, responsive: true}});
   }} catch (e) {{ console.error('m7 plot:', e); showEmpty(id); }}
