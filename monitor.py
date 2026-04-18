@@ -79,12 +79,84 @@ def fetch_cor1m():
     CBOE 1-Month Implied Correlation Index (^COR1M).
     S&P 500 구성종목 간 내재상관 — '모두 같이 움직일 확률'을 옵션으로 측정.
     높음(60+) = 시스템 공포, 낮음(<20) = 쏠림 극한 (역설적 위험).
-    
-    Yahoo Finance가 유일한 공개 소스. 여러 방식 순차 시도.
+
+    소스 우선순위:
+      1) CBOE 공식 CDN CSV (cdn.cboe.com, VIX_History와 같은 패턴) — 가장 안정적
+      2) FDR의 ^COR1M
+      3) Yahoo chart API (여러 user-agent, 세션 쿠키 시도)
+      4) Investing.com historical
     """
     import urllib.parse
+    from io import StringIO
 
-    # 1) FDR로 Yahoo ^COR1M 시도
+    # 1) CBOE 공식 CDN — 가장 안정적. GitHub IP도 막지 않음.
+    cboe_urls = [
+        "https://cdn.cboe.com/api/global/us_indices/daily_prices/COR1M_History.csv",
+        "https://cdn.cboe.com/api/global/us_indices/daily_prices/COR1M_Historical_Data.csv",
+    ]
+    for url in cboe_urls:
+        try:
+            r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+            if r.status_code != 200 or len(r.text) < 50:
+                continue
+            # CSV 구조: 보통 "DATE,OPEN,HIGH,LOW,CLOSE" 또는 "Date,Close"
+            content = r.text
+            # 헤더에 Cboe 경고문구 등이 섞여있을 수 있음 → 실제 헤더 줄 찾기
+            lines = content.splitlines()
+            header_idx = None
+            for i, line in enumerate(lines[:10]):
+                if re.search(r"date", line, re.IGNORECASE):
+                    header_idx = i
+                    break
+            if header_idx is None:
+                continue
+            clean_csv = "\n".join(lines[header_idx:])
+            df_cboe = pd.read_csv(StringIO(clean_csv))
+            # 날짜 컬럼 찾기
+            date_col = None
+            for c in df_cboe.columns:
+                if re.search(r"date", str(c), re.IGNORECASE):
+                    date_col = c
+                    break
+            if date_col is None:
+                continue
+            # 종가 컬럼 찾기
+            close_col = None
+            for c in df_cboe.columns:
+                cl = str(c).lower()
+                if "close" in cl or cl == "value":
+                    close_col = c
+                    break
+            if close_col is None:
+                # 컬럼이 Date와 하나만 있으면 그게 종가
+                other_cols = [c for c in df_cboe.columns if c != date_col]
+                if len(other_cols) >= 1:
+                    close_col = other_cols[-1]  # 마지막 컬럼이 보통 종가
+            if close_col is None:
+                continue
+            df_cboe[date_col] = pd.to_datetime(df_cboe[date_col], errors="coerce")
+            df_cboe = df_cboe.dropna(subset=[date_col])
+            df_cboe["_close"] = pd.to_numeric(df_cboe[close_col], errors="coerce")
+            df_cboe = df_cboe.dropna(subset=["_close"])
+            if df_cboe.empty:
+                continue
+            cutoff = TODAY - dt.timedelta(days=LOOKBACK_DAYS)
+            df_cboe = df_cboe[df_cboe[date_col].dt.date >= cutoff]
+            if df_cboe.empty:
+                continue
+            s = pd.Series(
+                df_cboe["_close"].values,
+                index=df_cboe[date_col].dt.date.values,
+                name="cor1m",
+            )
+            last = float(s.iloc[-1])
+            if 1 < last < 100:
+                print(f"  cor1m via cboe-cdn ({url.split('/')[-1]}): {len(s)} rows, latest {last:.2f}")
+                return s
+        except Exception as e:
+            print(f"  [info] cboe cdn {url.split('/')[-1]}: {e}")
+
+    # 2) FDR로 Yahoo ^COR1M 시도
     try:
         df = fdr.DataReader("^COR1M")
         if df is not None and not df.empty:
@@ -101,25 +173,14 @@ def fetch_cor1m():
     except Exception as e:
         print(f"  [info] fdr cor1m failed: {e}")
 
-    # 2) Yahoo chart API — 세션 쿠키 + 다양한 user-agent 시도
+    # 3) Yahoo chart API — 세션 쿠키 + 다양한 user-agent 시도
     end_ts = int(dt.datetime.now(KST).timestamp())
     start_ts = end_ts - LOOKBACK_DAYS * 86400
     user_agents = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     ]
     symbol_enc = urllib.parse.quote("^COR1M")
-    # query2 도메인이 query1보다 성공률 높을 수 있음
-    base_urls = [
-        f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol_enc}",
-        f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol_enc}",
-    ]
-    params_variants = [
-        {"period1": start_ts, "period2": end_ts, "interval": "1d"},
-        {"range": "1y", "interval": "1d"},
-        {"range": "6mo", "interval": "1d"},
-    ]
     for ua in user_agents:
         session = requests.Session()
         session.headers.update({
@@ -127,37 +188,37 @@ def fetch_cor1m():
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "en-US,en;q=0.9",
             "Referer": "https://finance.yahoo.com/quote/%5ECOR1M/",
-            "Origin": "https://finance.yahoo.com",
         })
-        # 먼저 Yahoo 홈페이지 접속해서 쿠키 확보
         try:
             session.get("https://finance.yahoo.com/", timeout=10)
         except Exception:
             pass
-        for url in base_urls:
-            for params in params_variants:
-                try:
-                    r = session.get(url, params=params, timeout=15)
-                    if r.status_code != 200:
-                        continue
-                    data = r.json()
-                    result = data["chart"]["result"][0]
-                    timestamps = result.get("timestamp", [])
-                    closes = result["indicators"]["quote"][0].get("close", [])
-                    if not timestamps or not closes:
-                        continue
-                    dates = [dt.datetime.fromtimestamp(t, tz=dt.timezone.utc).date() for t in timestamps]
-                    s = pd.Series(closes, index=dates, name="cor1m").dropna()
-                    if s.empty:
-                        continue
-                    last = float(s.iloc[-1])
-                    if 1 < last < 100:
-                        print(f"  cor1m via yahoo (ua={ua[:20]}...): {len(s)} rows, latest {last:.2f}")
-                        return s
-                except Exception:
+        for url_base in [
+            f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol_enc}",
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol_enc}",
+        ]:
+            try:
+                r = session.get(url_base, params={"period1": start_ts, "period2": end_ts, "interval": "1d"}, timeout=15)
+                if r.status_code != 200:
                     continue
+                data = r.json()
+                result = data["chart"]["result"][0]
+                timestamps = result.get("timestamp", [])
+                closes = result["indicators"]["quote"][0].get("close", [])
+                if not timestamps or not closes:
+                    continue
+                dates = [dt.datetime.fromtimestamp(t, tz=dt.timezone.utc).date() for t in timestamps]
+                s = pd.Series(closes, index=dates, name="cor1m").dropna()
+                if s.empty:
+                    continue
+                last = float(s.iloc[-1])
+                if 1 < last < 100:
+                    print(f"  cor1m via yahoo: {len(s)} rows, latest {last:.2f}")
+                    return s
+            except Exception:
+                continue
 
-    # 3) Investing.com 폴백
+    # 4) Investing.com 폴백
     try:
         s = fetch_investing_history("https://www.investing.com/indices/cboe-1month-implied-correlation-historical-data", "cor1m")
         if not s.empty:
@@ -269,127 +330,46 @@ def fetch_naver_deposit():
 
 
 def fetch_naver_foreign_flow():
-    """네이버 투자자 매매동향 스크래핑. 여러 엔드포인트 순차 시도."""
-    # 여러 네이버 엔드포인트 순차 시도
-    urls = [
-        "https://finance.naver.com/sise/investorDealTrendDay.naver",
-        "https://finance.naver.com/sise/investorDealTrend.naver",
-    ]
-    headers_variants = [
-        {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-         "Accept-Language": "ko-KR,ko;q=0.9",
-         "Referer": "https://finance.naver.com/"},
-        {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"},
-    ]
-    
-    result = {}
-    for url in urls:
-        if result:
-            break
-        for headers in headers_variants:
-            try:
-                r = requests.get(url, headers=headers, timeout=15)
-                r.encoding = "euc-kr"
-                if r.status_code != 200:
-                    continue
-                tables = pd.read_html(r.text, encoding="euc-kr")
-                for t in tables:
-                    cols = [str(c) for c in t.columns]
-                    flat = " ".join(cols) + " " + " ".join([str(x) for x in t.values.flatten().tolist()[:50]])
-                    if "외국인" in flat and ("날짜" in flat or "일자" in flat):
-                        for row in t.itertuples(index=False):
-                            row_vals = [str(v) for v in row]
-                            date_match = None
-                            for v in row_vals:
-                                m = re.search(r"(\d{2,4})[./-](\d{1,2})[./-](\d{1,2})", v)
-                                if m:
-                                    y, mo, d = m.groups()
-                                    if len(y) == 2:
-                                        y = "20" + y
-                                    try:
-                                        date_match = dt.date(int(y), int(mo), int(d))
-                                        break
-                                    except Exception:
-                                        continue
-                            if not date_match:
-                                continue
-                            numeric_vals = []
-                            for v in row_vals:
-                                v_clean = v.replace(",", "").replace("+", "").strip()
-                                if re.match(r"^-?\d+$", v_clean):
-                                    numeric_vals.append(int(v_clean))
-                            if len(numeric_vals) >= 3:
-                                # 보통 [개인, 외국인, 기관] 순서
-                                foreign_val = numeric_vals[1]
-                                result[date_match] = foreign_val
-                if result:
-                    break
-            except Exception as e:
-                print(f"  [warn] foreign naver {url}: {e}")
-                continue
-    
-    print(f"  foreign flow (naver): {len(result)} days")
-    return result
-
-
-def fetch_hankyung_foreign_flow():
-    """한경 외국인 매매동향 스크래핑 — 일별 코스피 외국인 순매수 금액(억원)."""
-    url = "https://markets.hankyung.com/investment/foreigner-trading"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        "Accept-Language": "ko-KR,ko;q=0.9",
-    }
+    """[DEPRECATED] 네이버 투자자 매매동향 스크래핑 — fallback용으로 유지. 최신 경로는 fetch_krx_foreign_flow()."""
+    url = "https://finance.naver.com/sise/investorDealTrendDay.naver"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    r = requests.get(url, headers=headers, timeout=15)
+    r.encoding = "euc-kr"
     result = {}
     try:
-        r = requests.get(url, headers=headers, timeout=15)
-        if r.status_code != 200:
-            return result
-        # 한경은 JavaScript로 데이터 로드하므로 API 엔드포인트 찾기 시도
-        # Fallback: HTML 테이블 파싱 시도
-        soup = BeautifulSoup(r.text, "html.parser")
-        tables = pd.read_html(r.text)
+        tables = pd.read_html(r.text, encoding="euc-kr")
         for t in tables:
-            cols = " ".join([str(c) for c in t.columns])
-            if "외국인" in cols or ("일자" in cols and "순매수" in cols):
+            cols = [str(c) for c in t.columns]
+            flat = " ".join(cols) + " " + " ".join([str(x) for x in t.values.flatten().tolist()[:50]])
+            if "외국인" in flat and ("날짜" in flat or "일자" in flat):
                 for row in t.itertuples(index=False):
                     row_vals = [str(v) for v in row]
                     date_match = None
                     for v in row_vals:
-                        m = re.search(r"(\d{4})[./-](\d{1,2})[./-](\d{1,2})", v)
+                        m = re.search(r"(\d{2,4})[./-](\d{1,2})[./-](\d{1,2})", v)
                         if m:
+                            y, mo, d = m.groups()
+                            if len(y) == 2:
+                                y = "20" + y
                             try:
-                                date_match = dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+                                date_match = dt.date(int(y), int(mo), int(d))
                                 break
                             except Exception:
                                 continue
                     if not date_match:
                         continue
-                    nums = []
+                    numeric_vals = []
                     for v in row_vals:
-                        vc = v.replace(",", "").replace("+", "").strip()
-                        if re.match(r"^-?\d+$", vc):
-                            nums.append(int(vc))
-                    if nums:
-                        result[date_match] = nums[0]
+                        v_clean = v.replace(",", "").replace("+", "").strip()
+                        if re.match(r"^-?\d+$", v_clean):
+                            numeric_vals.append(int(v_clean))
+                    if len(numeric_vals) >= 3:
+                        foreign_val = numeric_vals[1] if len(numeric_vals) >= 3 else numeric_vals[0]
+                        result[date_match] = foreign_val
     except Exception as e:
-        print(f"  [warn] hankyung foreign: {e}")
-    print(f"  foreign flow (hankyung): {len(result)} days")
+        print(f"  [warn] foreign flow (naver): {e}")
+    print(f"  foreign flow (naver): {len(result)} days")
     return result
-
-
-def fetch_foreign_flow_combined():
-    """여러 소스 순차 시도. 첫 번째 성공하는 것 반환."""
-    # 1) 네이버 먼저
-    result = fetch_naver_foreign_flow()
-    if result:
-        return result
-    # 2) 한경 폴백
-    result = fetch_hankyung_foreign_flow()
-    if result:
-        return result
-    # 모두 실패
-    print(f"  [warn] foreign flow: all sources failed")
-    return {}
 
 
 def fetch_krx_foreign_flow(days=LOOKBACK_DAYS):
@@ -748,10 +728,10 @@ def update_data():
                 result["forced_sale"][TODAY] = dep["forced_sale_eok"]
             return result
 
-    # 3. 외국인 순매수 — 네이버 우선 + 한경 폴백 (공공데이터에 일별 데이터 없음)
+    # 3. 외국인 순매수 — 네이버만 (공공데이터에 없음)
     def _foreign_flow():
         try:
-            return fetch_foreign_flow_combined()
+            return fetch_naver_foreign_flow()
         except Exception as e:
             print(f"  [warn] foreign flow failed: {e}")
             return {}
@@ -1424,12 +1404,14 @@ safePlot('c_kr_vkospi', [
 ]}});
 
 safePlot('c_kr_kospi_abs', [
-  {{x: D.dates, y: D.kospi, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#185FA5', width: 2.3}}}}
-], '코스피', D.kospi_range ? {{yaxis: {{range: D.kospi_range}}}} : undefined);
+  {{x: D.dates, y: D.kospi, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#185FA5', width: 2.3}}}},
+  {{x: D.dates, y: D.kospi_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {{color: '#A32D2D', width: 1.4, dash: 'dash'}}}}
+], '코스피 절대 추세', D.kospi_range ? {{yaxis: {{range: D.kospi_range}}}} : undefined);
 
 safePlot('c_kr_kosdaq_abs', [
-  {{x: D.dates, y: D.kosdaq, type: 'scatter', mode: 'lines', name: '코스닥', connectgaps: true, line: {{color: '#534AB7', width: 2.3}}}}
-], '코스닥', D.kosdaq_range ? {{yaxis: {{range: D.kosdaq_range}}}} : undefined);
+  {{x: D.dates, y: D.kosdaq, type: 'scatter', mode: 'lines', name: '코스닥', connectgaps: true, line: {{color: '#534AB7', width: 2.3}}}},
+  {{x: D.dates, y: D.kosdaq_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {{color: '#A32D2D', width: 1.4, dash: 'dash'}}}}
+], '코스닥 절대 추세', D.kosdaq_range ? {{yaxis: {{range: D.kosdaq_range}}}} : undefined);
 
 safePlot('c_kr_credit', [
   {{x: D.dates, y: D.kospi, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#185FA5', width: 2.2}}}},
@@ -1457,12 +1439,14 @@ safePlot('c_kr_sector', [
 ], '업종 바구니 누적 추세 (Base 100)', {{yaxis: {{title: 'Base 100'}}}});
 
 safePlot('c_us_sp', [
-  {{x: D.dates, y: D.sp500, type: 'scatter', mode: 'lines', name: 'S&P 500', connectgaps: true, line: {{color: '#185FA5', width: 2.3}}}}
-], 'S&P 500', D.sp500_range ? {{yaxis: {{range: D.sp500_range}}}} : undefined);
+  {{x: D.dates, y: D.sp500, type: 'scatter', mode: 'lines', name: 'S&P 500', connectgaps: true, line: {{color: '#185FA5', width: 2.3}}}},
+  {{x: D.dates, y: D.sp500_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {{color: '#A32D2D', width: 1.4, dash: 'dash'}}}}
+], 'S&P 500 + 200일선', D.sp500_range ? {{yaxis: {{range: D.sp500_range}}}} : undefined);
 
 safePlot('c_us_nasdaq', [
-  {{x: D.dates, y: D.nasdaq, type: 'scatter', mode: 'lines', name: '나스닥', connectgaps: true, line: {{color: '#534AB7', width: 2.3}}}}
-], '나스닥', D.nasdaq_range ? {{yaxis: {{range: D.nasdaq_range}}}} : undefined);
+  {{x: D.dates, y: D.nasdaq, type: 'scatter', mode: 'lines', name: '나스닥', connectgaps: true, line: {{color: '#534AB7', width: 2.3}}}},
+  {{x: D.dates, y: D.nasdaq_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {{color: '#A32D2D', width: 1.4, dash: 'dash'}}}}
+], '나스닥 + 200일선', D.nasdaq_range ? {{yaxis: {{range: D.nasdaq_range}}}} : undefined);
 
 safePlot('c_us_vix', [{{x: D.dates, y: D.vix, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VIX', connectgaps: false, line: {{color: '#A32D2D', width: 2.2}}, fillcolor: 'rgba(163,45,45,0.10)'}}], 'VIX 공포지수');
 
