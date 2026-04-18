@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>빚투 모니터 - 추세 전망 & 위험 신호</title>
+<script src="https://cdn.jsdelivr.net/npm/plotly.js@2.35.2/dist/plotly.min.js"></script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+         max-width: 1200px; margin: 0 auto; padding: 24px; color: #222; background: #fafafa; }
+  h1 { font-size: 26px; font-weight: 600; margin: 0 0 6px; }
+  .meta { color: #888; font-size: 13px; margin-bottom: 20px; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 2px solid #eee; }
+  .tab { padding: 12px 22px; cursor: pointer; font-weight: 500; font-size: 15px; color: #666; border-bottom: 2px solid transparent; margin-bottom: -2px; }
+  .tab.active { color: #222; border-bottom-color: #222; }
+  .pane { display: none; }
+  .pane.active { display: block; }
+  .overall { background: white; padding: 18px 22px; border-radius: 12px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
+  .overall-label { font-size: 13px; color: #888; }
+  .overall-value { font-size: 28px; font-weight: 600; }
+  .regime-block { background: white; padding: 18px 20px; border-radius: 12px; margin-bottom: 20px; }
+  .regime-title { font-size: 15px; font-weight: 600; margin-bottom: 14px; color: #333; }
+  .regime-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  @media (max-width: 768px) { .regime-grid { grid-template-columns: 1fr; } }
+  .regime-card { background: #fafafa; padding: 14px 16px; border-radius: 10px; border-top: 4px solid; }
+  .regime-name { font-size: 12px; color: #888; margin-bottom: 4px; }
+  .regime-value { font-size: 20px; font-weight: 600; margin-bottom: 2px; }
+  .regime-score { font-size: 11px; color: #aaa; margin-bottom: 8px; }
+  .regime-reasons { font-size: 12px; color: #555; line-height: 1.6; }
+  .signal-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .sig { background: white; padding: 14px 16px; border-radius: 10px; border-top: 4px solid; }
+  .sig-name { font-size: 12px; color: #888; margin-bottom: 4px; }
+  .sig-status { font-size: 17px; font-weight: 600; margin-bottom: 6px; }
+  .sig-desc { font-size: 12px; color: #555; line-height: 1.4; }
+  .chart { background: white; padding: 14px; border-radius: 12px; margin-bottom: 14px; }
+  .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
+  @media (max-width: 768px) { .chart-grid { grid-template-columns: 1fr; } }
+  .section-title { font-size: 16px; font-weight: 600; margin: 24px 0 10px; color: #444; }
+  .footer { font-size: 11px; color: #aaa; margin-top: 32px; padding-top: 16px; border-top: 1px solid #eee; }
+</style>
+</head>
+<body>
+<h1>빚투 모니터</h1>
+<div class="meta">시장 추세 전망 & 위험 신호 · 매일 평일 17:30 자동 갱신 (1일 1회) · 업데이트 대기</div>
+
+<div class="tabs">
+  <div class="tab active" data-tab="kr">🇰🇷 한국장 (대기)</div>
+  <div class="tab" data-tab="us">🇺🇸 미국장 (대기)</div>
+</div>
+
+<div id="pane-kr" class="pane active">
+  
+      <div class="regime-block">
+        <div class="regime-title">코스피 추세 전망</div>
+        <div class="regime-grid">
+        <div class="regime-card" style="border-top-color: #aaa;">
+          <div class="regime-name">단기 (1~3개월)</div>
+          <div class="regime-value" style="color: #aaa;">대기</div>
+          <div class="regime-score">점수 +0</div>
+          <div class="regime-reasons">· 데이터 수집 중</div>
+        </div>
+        <div class="regime-card" style="border-top-color: #aaa;">
+          <div class="regime-name">중기 (3~6개월)</div>
+          <div class="regime-value" style="color: #aaa;">대기</div>
+          <div class="regime-score">점수 +0</div>
+          <div class="regime-reasons">· 데이터 수집 중</div>
+        </div>
+        <div class="regime-card" style="border-top-color: #aaa;">
+          <div class="regime-name">장기 (6~12개월)</div>
+          <div class="regime-value" style="color: #aaa;">대기</div>
+          <div class="regime-score">점수 +0</div>
+          <div class="regime-reasons">· 데이터 수집 중</div>
+        </div></div>
+      </div>
+    
+  <div class="section-title">단기 위험 신호 (일간)</div>
+  <div class="overall" style="border-left: 6px solid #888;">
+    <div><div class="overall-label">한국 위험도 점수</div><div class="overall-value" style="color: #888;">대기</div></div>
+    <div style="font-size: 14px; color: #888;">0 / 18점</div>
+  </div>
+  <div class="signal-grid"></div>
+  <div class="section-title">차트</div>
+  <div class="chart-grid">
+    <div class="chart"><div id="c_kr_rel" style="height:320px;"></div></div>
+    <div class="chart"><div id="c_kr_vkospi" style="height:320px;"></div></div>
+  </div>
+  <div class="chart-grid">
+    <div class="chart"><div id="c_kr_kospi_abs" style="height:280px;"></div></div>
+    <div class="chart"><div id="c_kr_kosdaq_abs" style="height:280px;"></div></div>
+  </div>
+  <div class="chart"><div id="c_kr_credit" style="height:300px;"></div></div>
+  <div class="chart"><div id="c_kr_forced" style="height:280px;"></div></div>
+  <div class="chart"><div id="c_kr_foreign" style="height:300px;"></div></div>
+  <div class="chart"><div id="c_kr_foreign_hold" style="height:320px;"></div></div>
+  <div class="chart"><div id="c_kr_semi" style="height:280px;"></div></div>
+  <div class="chart"><div id="c_kr_sector" style="height:320px;"></div></div>
+</div>
+
+<div id="pane-us" class="pane">
+  
+      <div class="regime-block">
+        <div class="regime-title">S&P 500 추세 전망</div>
+        <div class="regime-grid">
+        <div class="regime-card" style="border-top-color: #aaa;">
+          <div class="regime-name">단기 (1~3개월)</div>
+          <div class="regime-value" style="color: #aaa;">대기</div>
+          <div class="regime-score">점수 +0</div>
+          <div class="regime-reasons">· 데이터 수집 중</div>
+        </div>
+        <div class="regime-card" style="border-top-color: #aaa;">
+          <div class="regime-name">중기 (3~6개월)</div>
+          <div class="regime-value" style="color: #aaa;">대기</div>
+          <div class="regime-score">점수 +0</div>
+          <div class="regime-reasons">· 데이터 수집 중</div>
+        </div>
+        <div class="regime-card" style="border-top-color: #aaa;">
+          <div class="regime-name">장기 (6~12개월)</div>
+          <div class="regime-value" style="color: #aaa;">대기</div>
+          <div class="regime-score">점수 +0</div>
+          <div class="regime-reasons">· 데이터 수집 중</div>
+        </div></div>
+      </div>
+    
+  <div class="section-title">단기 위험 신호 (일간)</div>
+  <div class="overall" style="border-left: 6px solid #888;">
+    <div><div class="overall-label">미국 위험도 점수</div><div class="overall-value" style="color: #888;">대기</div></div>
+    <div style="font-size: 14px; color: #888;">0 / 21점</div>
+  </div>
+  <div class="signal-grid"></div>
+  <div class="section-title">차트</div>
+  <div class="chart-grid">
+    <div class="chart"><div id="c_us_sp" style="height:300px;"></div></div>
+    <div class="chart"><div id="c_us_nasdaq" style="height:300px;"></div></div>
+  </div>
+  <div class="chart-grid">
+    <div class="chart"><div id="c_us_vix" style="height:280px;"></div></div>
+    <div class="chart"><div id="c_us_nvda" style="height:280px;"></div></div>
+  </div>
+  <div class="chart"><div id="c_us_rate" style="height:280px;"></div></div>
+  <div class="chart"><div id="c_us_cor1m" style="height:300px;"></div></div>
+  <div class="chart"><div id="c_us_margin" style="height:320px;"></div></div>
+  <div class="chart"><div id="c_us_m7" style="height:900px;"></div></div>
+  <div class="chart"><div id="c_us_gl" style="height:380px;"></div></div>
+</div>
+
+<div class="footer">데이터: FinanceDataReader, FRED(미국 10Y), 네이버 금융/공공데이터/보조 스크래핑 · 투자 권유 아님</div>
+
+<script>
+const D = {"dates": [], "kospi": [], "kosdaq": [], "kospi_ma200": [], "kosdaq_ma200": [], "kospi_base100": [], "kosdaq_base100": [], "samsung_base100": [], "hynix_base100": [], "vkospi": [], "credit": [], "forced": [], "foreign": [], "sp500": [], "sp500_ma200": [], "nasdaq": [], "nasdaq_ma200": [], "vix": [], "nvda": [], "ust10y": [], "cor1m": [], "sec_반도체": [], "sec_자동차": [], "sec_조선방산": [], "sec_금융": [], "sec_2차전지": [], "sec_인터넷": [], "sec_바이오": [], "sp500_range": null, "nasdaq_range": null, "kospi_range": null, "kosdaq_range": null, "margin_dates": [], "margin_vals": [], "m7_dates": [], "m7_series": {}, "gl_dates": [], "global_liquidity": [], "usdjpy": [], "fh_dates": [], "fh_amount": [], "fh_pct": []};
+const base = {
+  margin: {t: 30, r: 45, b: 35, l: 50}, font: {family: 'system-ui'},
+  paper_bgcolor: 'white', plot_bgcolor: 'white', legend: {orientation: 'h', y: -0.2}, hovermode: 'x unified'
+};
+
+function bindTabs() {
+  document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', e => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.pane').forEach(x => x.classList.remove('active'));
+    e.currentTarget.classList.add('active');
+    const pane = document.getElementById('pane-' + e.currentTarget.dataset.tab);
+    if (pane) pane.classList.add('active');
+    setTimeout(() => window.dispatchEvent(new Event('resize')), 120);
+  }));
+}
+
+function hasValues(arr) {
+  return Array.isArray(arr) && arr.some(v => v !== null && v !== undefined && !Number.isNaN(v));
+}
+function showEmpty(id, message='데이터 수집 실패 또는 데이터 없음') {
+  const el = document.getElementById(id);
+  if (el) el.innerHTML = `<div style="height:100%;display:flex;align-items:center;justify-content:center;color:#888;font-size:13px;">${message}</div>`;
+}
+function safePlot(id, traces, title, extra) {
+  try {
+    const valid = (traces || []).filter(t => hasValues(t.y));
+    if (!D.dates.length || valid.length === 0) { showEmpty(id); return; }
+    Plotly.newPlot(id, valid, {...base, title: {text: title, font: {size: 13}}, ...(extra || {})});
+  } catch (err) {
+    console.error('plot error', id, err);
+    showEmpty(id, '차트 렌더링 실패');
+  }
+}
+
+bindTabs();
+
+safePlot('c_kr_rel', [
+  {x: D.dates, y: D.kospi_base100, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {color: '#185FA5', width: 2.5}},
+  {x: D.dates, y: D.kosdaq_base100, type: 'scatter', mode: 'lines', name: '코스닥', connectgaps: true, line: {color: '#534AB7', width: 2.5}}
+], '코스피 vs 코스닥 상대 추세 (Base 100)', {yaxis: {title: 'Base 100'}});
+
+safePlot('c_kr_vkospi', [
+  {x: D.dates, y: D.vkospi, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VKOSPI', connectgaps: true, line: {color: '#A32D2D', width: 2.2}, fillcolor: 'rgba(163,45,45,0.10)'}
+], 'VKOSPI 공포지수', {yaxis: {title: 'VKOSPI', range: [0, 80]}, shapes: [
+  {type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 20, y1: 20, line: {color: '#BA7517', width: 1, dash: 'dot'}},
+  {type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 30, y1: 30, line: {color: '#A32D2D', width: 1, dash: 'dot'}},
+  {type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 40, y1: 40, line: {color: '#A32D2D', width: 1.5, dash: 'dash'}}
+]});
+
+safePlot('c_kr_kospi_abs', [
+  {x: D.dates, y: D.kospi, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {color: '#185FA5', width: 2.3}},
+  {x: D.dates, y: D.kospi_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {color: '#A32D2D', width: 1.4, dash: 'dash'}}
+], '코스피 절대 추세', D.kospi_range ? {yaxis: {range: D.kospi_range}} : undefined);
+
+safePlot('c_kr_kosdaq_abs', [
+  {x: D.dates, y: D.kosdaq, type: 'scatter', mode: 'lines', name: '코스닥', connectgaps: true, line: {color: '#534AB7', width: 2.3}},
+  {x: D.dates, y: D.kosdaq_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {color: '#A32D2D', width: 1.4, dash: 'dash'}}
+], '코스닥 절대 추세', D.kosdaq_range ? {yaxis: {range: D.kosdaq_range}} : undefined);
+
+safePlot('c_kr_credit', [
+  {x: D.dates, y: D.kospi, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {color: '#185FA5', width: 2.2}},
+  {x: D.dates, y: D.credit, type: 'scatter', mode: 'lines', name: '신용잔고(억)', yaxis: 'y2', connectgaps: false, line: {color: '#993C1D', width: 2, dash: 'dash'}}
+], '코스피 vs 신용잔고', {yaxis: {title: '코스피'}, yaxis2: {title: '잔고(억)', overlaying: 'y', side: 'right'}});
+
+safePlot('c_kr_forced', [{x: D.dates, y: D.forced, type: 'bar', name: '반대매매(억)', marker: {color: (D.forced || []).map(v => v >= 600 ? '#A32D2D' : v >= 400 ? '#D85A30' : v >= 200 ? '#BA7517' : '#888')}}], '일일 반대매매');
+
+safePlot('c_kr_foreign', [{x: D.dates, y: D.foreign, type: 'bar', name: '외국인(억)', marker: {color: (D.foreign || []).map(v => (v ?? 0) < 0 ? '#A32D2D' : '#1D9E75')}}], '외국인 일별 순매수/매도 (코스피+코스닥)');
+
+safePlot('c_kr_semi', [
+  {x: D.dates, y: D.kospi_base100, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {color: '#888', width: 1.2, dash: 'dot'}},
+  {x: D.dates, y: D.samsung_base100, type: 'scatter', mode: 'lines', name: '삼성전자', connectgaps: true, line: {color: '#185FA5', width: 2.2}},
+  {x: D.dates, y: D.hynix_base100, type: 'scatter', mode: 'lines', name: 'SK하이닉스', connectgaps: true, line: {color: '#534AB7', width: 2.2}}
+], '반도체 누적 추세 (Base 100)', {yaxis: {title: 'Base 100'}});
+
+safePlot('c_kr_sector', [
+  {x: D.dates, y: D.sec_반도체, type: 'scatter', mode: 'lines', name: '반도체', connectgaps: false, line: {color: '#185FA5', width: 2.2}},
+  {x: D.dates, y: D.sec_자동차, type: 'scatter', mode: 'lines', name: '자동차', connectgaps: false, line: {color: '#7D56F4', width: 2.0}},
+  {x: D.dates, y: D.sec_조선방산, type: 'scatter', mode: 'lines', name: '조선방산', connectgaps: false, line: {color: '#534AB7', width: 2.0}},
+  {x: D.dates, y: D.sec_금융, type: 'scatter', mode: 'lines', name: '금융', connectgaps: false, line: {color: '#888', width: 1.8}},
+  {x: D.dates, y: D.sec_2차전지, type: 'scatter', mode: 'lines', name: '2차전지', connectgaps: false, line: {color: '#BA7517', width: 1.8}},
+  {x: D.dates, y: D.sec_인터넷, type: 'scatter', mode: 'lines', name: '인터넷', connectgaps: false, line: {color: '#1D9E75', width: 1.8}},
+  {x: D.dates, y: D.sec_바이오, type: 'scatter', mode: 'lines', name: '바이오', connectgaps: false, line: {color: '#2AA198', width: 1.8}}
+], '업종 바구니 누적 추세 (Base 100)', {yaxis: {title: 'Base 100'}});
+
+safePlot('c_us_sp', [
+  {x: D.dates, y: D.sp500, type: 'scatter', mode: 'lines', name: 'S&P 500', connectgaps: true, line: {color: '#185FA5', width: 2.3}},
+  {x: D.dates, y: D.sp500_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {color: '#A32D2D', width: 1.4, dash: 'dash'}}
+], 'S&P 500 + 200일선', D.sp500_range ? {yaxis: {range: D.sp500_range}} : undefined);
+
+safePlot('c_us_nasdaq', [
+  {x: D.dates, y: D.nasdaq, type: 'scatter', mode: 'lines', name: '나스닥', connectgaps: true, line: {color: '#534AB7', width: 2.3}},
+  {x: D.dates, y: D.nasdaq_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {color: '#A32D2D', width: 1.4, dash: 'dash'}}
+], '나스닥 + 200일선', D.nasdaq_range ? {yaxis: {range: D.nasdaq_range}} : undefined);
+
+safePlot('c_us_vix', [{x: D.dates, y: D.vix, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VIX', connectgaps: false, line: {color: '#A32D2D', width: 2.2}, fillcolor: 'rgba(163,45,45,0.10)'}], 'VIX 공포지수');
+
+safePlot('c_us_nvda', [{x: D.dates, y: D.nvda, type: 'scatter', mode: 'lines', name: 'NVDA', connectgaps: false, line: {color: '#1D9E75', width: 2.2}}], '엔비디아');
+
+safePlot('c_us_rate', [{x: D.dates, y: D.ust10y, type: 'scatter', mode: 'lines', name: '10Y', connectgaps: false, line: {color: '#BA7517', width: 2.2}}], '미국 10년물 국채금리 (%)');
+
+safePlot('c_us_cor1m', [{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'COR1M', connectgaps: false, line: {color: '#534AB7', width: 2.2}, fillcolor: 'rgba(83,74,183,0.08)'}], 'CBOE 1개월 내재상관 (COR1M)', {yaxis: {title: 'COR1M', range: [0, 100]}, shapes: [
+  {type: 'rect', xref: 'paper', x0: 0, x1: 1, y0: 60, y1: 100, fillcolor: 'rgba(163,45,45,0.08)', line: {width: 0}},
+  {type: 'rect', xref: 'paper', x0: 0, x1: 1, y0: 0, y1: 15, fillcolor: 'rgba(186,117,23,0.10)', line: {width: 0}},
+  {type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 60, y1: 60, line: {color: '#A32D2D', width: 1, dash: 'dot'}},
+  {type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 20, y1: 20, line: {color: '#1D9E75', width: 1, dash: 'dot'}},
+  {type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 15, y1: 15, line: {color: '#BA7517', width: 1, dash: 'dot'}}
+]});
+
+// === 미국 신용잔고 (월별, FINRA) ===
+(function() {
+  const id = 'c_us_margin';
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (!D.margin_dates || D.margin_dates.length === 0) {
+    showEmpty(id);
+    return;
+  }
+  try {
+    Plotly.newPlot(id, [{
+      x: D.margin_dates, y: D.margin_vals, type: 'bar', name: '신용잔고 (십억$)',
+      marker: {color: '#A32D2D', opacity: 0.85}
+    }], Object.assign({}, base, {
+      title: {text: '미국 신용잔고 (FINRA Margin Debt, 월별)', font: {size: 14}},
+      yaxis: {title: '십억 USD'},
+      xaxis: {title: ''}
+    }), {displayModeBar: false, responsive: true});
+  } catch (e) { console.error('margin plot:', e); showEmpty(id); }
+})();
+
+// === M7 + AVGO + TSM + IXIC vs S&P500 (Base 100) ===
+(function() {
+  const id = 'c_us_m7';
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (!D.m7_dates || D.m7_dates.length === 0 || !D.m7_series || Object.keys(D.m7_series).length === 0) {
+    showEmpty(id);
+    return;
+  }
+  try {
+    // 서로 잘 구분되는 11개 고대비 팔레트 (겹침 최소화)
+    const colorMap = {
+      'SP500': '#6B7280',  // 회색 (벤치마크)
+      'IXIC':  '#1E3A8A',  // 진청색 (벤치마크)
+      'AAPL':  '#111827',  // 블랙
+      'MSFT':  '#0EA5E9',  // 하늘
+      'GOOGL': '#10B981',  // 에메랄드
+      'AMZN':  '#F59E0B',  // 앰버
+      'META':  '#7C3AED',  // 바이올렛
+      'NVDA':  '#84CC16',  // 라임
+      'TSLA':  '#DC2626',  // 빨강
+      'AVGO':  '#EA580C',  // 오렌지
+      'TSM':   '#DB2777'   // 핑크
+    };
+    const labelMap = {
+      'SP500': 'S&P500',
+      'IXIC':  '나스닥 (IXIC)',
+      'AAPL':  '애플 AAPL',
+      'MSFT':  'MS MSFT',
+      'GOOGL': '구글 GOOGL',
+      'AMZN':  '아마존 AMZN',
+      'META':  '메타 META',
+      'NVDA':  '엔비디아 NVDA',
+      'TSLA':  '테슬라 TSLA',
+      'AVGO':  '브로드컴 AVGO',
+      'TSM':   'TSMC TSM'
+    };
+    const order = ['SP500', 'IXIC', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA', 'AVGO', 'TSM'];
+    const traces = [];
+    order.forEach(t => {
+      const vals = D.m7_series[t];
+      if (!vals || !hasValues(vals)) return;
+      const isSP = t === 'SP500';
+      const isNas = t === 'IXIC';
+      traces.push({
+        x: D.m7_dates,
+        y: vals,
+        type: 'scatter',
+        mode: 'lines',
+        name: labelMap[t] || t,
+        connectgaps: true,
+        _key: t,  // 내부 참조용
+        line: {
+          color: colorMap[t] || '#666',
+          width: (isSP || isNas) ? 2.6 : 2.4,
+          dash: isSP ? 'dot' : (isNas ? 'dash' : 'solid'),
+          shape: 'spline',
+          smoothing: 1.0
+        },
+        hoverlabel: {font: {size: 13}}
+      });
+    });
+    if (traces.length === 0) { showEmpty(id); return; }
+
+    // 랭킹 계산 - 최신 값 기준 내림차순
+    const ranking = traces
+      .map(t => {
+        const lastVal = [...t.y].reverse().find(v => v !== null && v !== undefined);
+        return {key: t._key, name: t.name, last: lastVal};
+      })
+      .filter(x => x.last !== undefined && x.last !== null)
+      .sort((a, b) => b.last - a.last);
+
+    // 랭킹 annotations - 박스 없이 텍스트만, 각 줄 색 = 라인 색
+    const lineHeight = 0.038;
+    const boxTop = 0.985;
+    const boxLeft = 0.012;
+    const rankAnnotations = [];
+    ranking.forEach((x, i) => {
+      const color = colorMap[x.key] || '#333';
+      rankAnnotations.push({
+        xref: 'paper', yref: 'paper',
+        x: boxLeft, y: boxTop - (i * lineHeight),
+        xanchor: 'left', yanchor: 'top',
+        align: 'left', showarrow: false,
+        text: '<b>' + (i + 1) + '위</b> ' + x.name + '<b> ' + x.last.toFixed(1) + '</b>',
+        font: {size: 15, color: color, family: 'system-ui'}
+      });
+    });
+
+    Plotly.newPlot(id, traces, Object.assign({}, base, {
+      title: {text: 'M7 + 브로드컴 + TSMC + 나스닥 vs S&P500 누적 추세 (Base 100)', font: {size: 16}},
+      yaxis: {title: {text: 'Base 100', font: {size: 13}}, gridcolor: '#F3F4F6'},
+      xaxis: {gridcolor: '#F3F4F6'},
+      legend: {orientation: 'h', y: -0.08, x: 0.5, xanchor: 'center', font: {size: 12}},
+      margin: {t: 60, r: 40, b: 90, l: 60},
+      annotations: rankAnnotations,
+      hovermode: 'x unified'
+    }), {displayModeBar: false, responsive: true});
+  } catch (e) { console.error('m7 plot:', e); showEmpty(id); }
+})();
+
+// === 글로벌 유동성 Proxy vs 달러-엔 ===
+(function() {
+  const id = 'c_us_gl';
+  const el = document.getElementById(id);
+  if (!el) return;
+  const hasGL = D.gl_dates && D.gl_dates.length > 0 && hasValues(D.global_liquidity);
+  const hasUJ = D.gl_dates && D.gl_dates.length > 0 && hasValues(D.usdjpy);
+  if (!hasGL && !hasUJ) { showEmpty(id); return; }
+  try {
+    const traces = [];
+    if (hasGL) traces.push({x:D.gl_dates,y:D.global_liquidity,type:'scatter',mode:'lines',name:'글로벌 유동성 proxy',connectgaps:true,line:{color:'#185FA5',width:2.8}});
+    if (hasUJ) traces.push({x:D.gl_dates,y:D.usdjpy,type:'scatter',mode:'lines',name:'달러-엔',yaxis:'y2',connectgaps:true,line:{color:'#9ca3af',width:2.1}});
+    Plotly.newPlot(id, traces, Object.assign({}, base, {
+      title:{text:'글로벌 유동성 Proxy vs 달러-엔', font:{size:14}},
+      yaxis:{title:'Proxy (Base 100)'},
+      yaxis2:{title:'엔', overlaying:'y', side:'right'}
+    }), {displayModeBar:false, responsive:true});
+  } catch (e) { console.error('gl plot:', e); showEmpty(id); }
+})();
+
+// === 한국 외국인 보유금액 + 비중 (월별, 이중축) ===
+(function() {
+  const id = 'c_kr_foreign_hold';
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (!D.fh_dates || D.fh_dates.length === 0) {
+    showEmpty(id);
+    return;
+  }
+  const hasAmount = hasValues(D.fh_amount);
+  const hasPct = hasValues(D.fh_pct);
+  if (!hasAmount && !hasPct) { showEmpty(id); return; }
+  try {
+    const traces = [];
+    if (hasAmount) {
+      traces.push({
+        x: D.fh_dates, y: D.fh_amount, type: 'bar', name: '보유금액(조원)',
+        marker: {color: '#185FA5', opacity: 0.75}
+      });
+    }
+    if (hasPct) {
+      traces.push({
+        x: D.fh_dates, y: D.fh_pct, type: 'scatter', mode: 'lines+markers',
+        name: '보유비중(%)', yaxis: 'y2',
+        line: {color: '#BA7517', width: 2}, marker: {size: 5}
+      });
+    }
+    Plotly.newPlot(id, traces, Object.assign({}, base, {
+      title: {text: '외국인 주식 보유금액 + 비중 (월별)', font: {size: 14}},
+      yaxis: {title: '조원'},
+      yaxis2: {title: '비중(%)', overlaying: 'y', side: 'right'},
+      legend: {orientation: 'h', y: -0.18}
+    }), {displayModeBar: false, responsive: true});
+  } catch (e) { console.error('fhold plot:', e); showEmpty(id); }
+})();
+</script>
+</body>
+</html>
