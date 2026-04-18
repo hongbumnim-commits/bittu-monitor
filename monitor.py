@@ -550,22 +550,73 @@ def fetch_krx_vkospi(days=LOOKBACK_DAYS):
     raise NotImplementedError("pykrx 방식은 사용하지 않습니다. fetch_fdr_vkospi를 쓰세요.")
 
 
+def fetch_stooq_csv(symbol, name="series", days=LOOKBACK_DAYS):
+    """
+    Stooq에서 CSV로 시계열 데이터 다운로드.
+    심볼 규칙: ^ticker (지수), ticker.us (미국주식), ticker.f (선물)
+    URL: https://stooq.com/q/d/l/?s=SYMBOL&i=d
+    """
+    from io import StringIO
+    url = f"https://stooq.com/q/d/l/?s={symbol}&i=d"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Accept": "text/csv,text/plain,*/*",
+        "Accept-Language": "en-US,en;q=0.9,pl;q=0.8",
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=20)
+        if r.status_code != 200:
+            print(f"  [info] stooq {symbol}: status {r.status_code}")
+            return pd.Series(dtype=float, name=name)
+        text = r.text.strip()
+        if not text or "Date" not in text[:30]:
+            # CAPTCHA 또는 에러 페이지
+            print(f"  [info] stooq {symbol}: invalid response (maybe CAPTCHA)")
+            return pd.Series(dtype=float, name=name)
+        df = pd.read_csv(StringIO(text))
+        if df.empty or "Date" not in df.columns or "Close" not in df.columns:
+            return pd.Series(dtype=float, name=name)
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        df = df.dropna(subset=["Date"])
+        cutoff = TODAY - dt.timedelta(days=days)
+        df = df[df["Date"].dt.date >= cutoff]
+        if df.empty:
+            return pd.Series(dtype=float, name=name)
+        s = pd.Series(df["Close"].values, index=df["Date"].dt.date.values, name=name).dropna()
+        print(f"  {name} via stooq ({symbol}): {len(s)} rows, latest {float(s.iloc[-1]):.2f}")
+        return s
+    except Exception as e:
+        print(f"  [warn] stooq {symbol}: {e}")
+        return pd.Series(dtype=float, name=name)
+
+
 def fetch_fdr_vkospi():
     """
     VKOSPI 지수 조회. 여러 소스 순차 시도 + 값 검증.
-    VKOSPI 정상 범위는 5~200 (2026년 중동전쟁 시 80+ 기록).
-    FDR의 KSVKOSPI는 가끔 코스피 값을 반환하는 버그 있음 → 400 초과시 거절.
+    VKOSPI 정상 범위는 3~200 (2026년 중동전쟁 시 80+ 기록).
+    
+    소스 우선순위:
+      1) Stooq ^VKOSPI — GitHub IP 안 막음, 가장 안정적
+      2) Yahoo Finance chart API
+      3) FDR
+      4) Investing.com historical
+      5) 네이버 일일 spot 값 (최후)
     """
     import urllib.parse
 
     cutoff = TODAY - dt.timedelta(days=LOOKBACK_DAYS)
 
-    # 1) FDR 여러 심볼 시도 — KSVKOSPI는 코스피 값 반환 버그 있어서 skip
-    #    우선 Yahoo 직접 호출로 가고, FDR은 fallback
+    # 1) Stooq — 가장 안정적인 공개 소스
+    for stooq_sym in ["^vkospi", "vkospi", "^ksvkospi"]:
+        s = fetch_stooq_csv(stooq_sym, name="vkospi")
+        if not s.empty:
+            last = float(s.iloc[-1])
+            if 3 <= last <= 200:
+                return s
+
+    # 2) Yahoo Finance chart API
     end_ts = int(dt.datetime.now(KST).timestamp())
     start_ts = end_ts - LOOKBACK_DAYS * 86400
-
-    # 2) Yahoo Finance chart API 직접 호출 — 가장 신뢰도 높음
     yahoo_symbols = ["^VKOSPI", "^KSVKOSPI"]
     for symbol in yahoo_symbols:
         try:
@@ -593,8 +644,6 @@ def fetch_fdr_vkospi():
             if s.empty:
                 continue
             last = float(s.iloc[-1])
-            # 유효 범위 대폭 확대: VKOSPI는 이론상 5~200 (2026년 80+ 도달 사례)
-            # 400 이상이면 확실히 코스피 혼선
             if 3 <= last <= 200:
                 print(f"  vkospi via yahoo ({symbol}): {len(s)} rows, latest {last:.2f}")
                 return s
@@ -1008,6 +1057,8 @@ def fetch_foreign_holding_kr():
     """
     index.go.kr(지표나라) 외국인 증권투자 현황 HTML 파싱.
     Returns: dict {date: {'amount_trillion': float, 'pct': float}}
+    
+    페이지 구조가 자주 바뀌므로 여러 regex 패턴을 관대하게 시도.
     """
     url = "https://www.index.go.kr/unity/potal/main/EachDtlPageDetail.do?idx_cd=1086"
     headers = {
@@ -1018,39 +1069,64 @@ def fetch_foreign_holding_kr():
     try:
         r = requests.get(url, headers=headers, timeout=20)
         if r.status_code != 200:
+            print(f"  [warn] foreign holding kr: status {r.status_code}")
             return result
         text = r.text
-        # "('YY.MM월말) XXX.X조원" — 다양한 따옴표 허용
-        amount_pattern = re.compile(r"[\(\[][^)\]]*?(\d{2})\.(\d{1,2})월말[^)\]]*?[\)\]]\s*([\d,]+\.?\d*)\s*조원")
-        for m in amount_pattern.finditer(text):
-            try:
-                y = 2000 + int(m.group(1))
-                mo = int(m.group(2))
-                amount = float(m.group(3).replace(",", ""))
-                if 1 <= mo <= 12 and 100 <= amount <= 2000:
-                    d = dt.date(y, mo, 1)
-                    if d not in result:
-                        result[d] = {"amount_trillion": amount, "pct": None}
-                    else:
-                        result[d]["amount_trillion"] = amount
-            except (ValueError, TypeError):
-                continue
-        # 비중 패턴 — "('YY.MM월) XX.X"
-        pct_pattern = re.compile(r"[\(\[][^)\]]*?(\d{2})\.(\d{1,2})월[^)\]]*?[\)\]]\s*(\d{2}\.\d)(?:\s|$|→|,)")
-        for m in pct_pattern.finditer(text):
-            try:
-                y = 2000 + int(m.group(1))
-                mo = int(m.group(2))
-                pct = float(m.group(3))
-                if 1 <= mo <= 12 and 15 <= pct <= 50:
-                    d = dt.date(y, mo, 1)
-                    if d not in result:
-                        result[d] = {"amount_trillion": None, "pct": pct}
-                    else:
-                        if result[d].get("pct") is None:
+        
+        # 금액 패턴 여러 종류 시도
+        amount_patterns = [
+            # "('YY.MM월말) XXX.X조원" 다양한 따옴표
+            re.compile(r"[\(\[\uFF08]?['\u2019\u2018\u201C\u201D`]?(\d{2})[\.\-](\d{1,2})\s*월\s*말?['\u2019\u2018\u201C\u201D`]?[\)\]\uFF09]?\s*[:\-\s]*([\d,]+\.?\d*)\s*조\s*원"),
+            # "2023년 12월: 573.8조원" 형식
+            re.compile(r"(20\d{2})\s*년\s*(\d{1,2})\s*월[^\d]{1,10}([\d,]+\.?\d*)\s*조"),
+            # "2024.12 573.8조" 형식
+            re.compile(r"(20\d{2})[\.\-/](\d{1,2})\s*[:\s]+([\d,]+\.?\d*)\s*조"),
+        ]
+        
+        for pattern in amount_patterns:
+            for m in pattern.finditer(text):
+                try:
+                    y_raw, mo_raw, val_raw = m.group(1), m.group(2), m.group(3)
+                    y = int(y_raw)
+                    if y < 100:
+                        y += 2000
+                    mo = int(mo_raw)
+                    amount = float(val_raw.replace(",", ""))
+                    if 1 <= mo <= 12 and 2000 <= y <= 2099 and 100 <= amount <= 2000:
+                        d = dt.date(y, mo, 1)
+                        if d not in result or result[d].get("amount_trillion") is None:
+                            if d not in result:
+                                result[d] = {"amount_trillion": amount, "pct": None}
+                            else:
+                                result[d]["amount_trillion"] = amount
+                except (ValueError, TypeError):
+                    continue
+        
+        # 비중 패턴 여러 종류 시도
+        pct_patterns = [
+            # "('YY.MM월) 32.3" 
+            re.compile(r"[\(\[\uFF08]?['\u2019\u2018\u201C\u201D`]?(\d{2})[\.\-](\d{1,2})\s*월['\u2019\u2018\u201C\u201D`]?[\)\]\uFF09]?\s*[:\-\s]*(\d{2}\.\d)"),
+            # "2024.12 32.3%"
+            re.compile(r"(20\d{2})[\.\-/](\d{1,2})\s*[:\s]+(\d{2}\.\d)\s*%?"),
+        ]
+        for pattern in pct_patterns:
+            for m in pattern.finditer(text):
+                try:
+                    y_raw, mo_raw, val_raw = m.group(1), m.group(2), m.group(3)
+                    y = int(y_raw)
+                    if y < 100:
+                        y += 2000
+                    mo = int(mo_raw)
+                    pct = float(val_raw)
+                    if 1 <= mo <= 12 and 2000 <= y <= 2099 and 15 <= pct <= 50:
+                        d = dt.date(y, mo, 1)
+                        if d not in result:
+                            result[d] = {"amount_trillion": None, "pct": pct}
+                        elif result[d].get("pct") is None:
                             result[d]["pct"] = pct
-            except (ValueError, TypeError):
-                continue
+                except (ValueError, TypeError):
+                    continue
+        
         cutoff = TODAY - dt.timedelta(days=36 * 31)
         result = {d: v for d, v in result.items() if d >= cutoff}
         if result:
@@ -1059,6 +1135,8 @@ def fetch_foreign_holding_kr():
             amt_str = f"{lv['amount_trillion']:.0f}조" if lv.get('amount_trillion') else "-"
             pct_str = f"{lv['pct']:.1f}%" if lv.get('pct') else "-"
             print(f"  foreign holding kr (index.go.kr): {len(result)} months, latest {latest}: {amt_str} / {pct_str}")
+        else:
+            print(f"  [warn] foreign holding kr: no matches found (page length={len(text)})")
     except Exception as e:
         print(f"  [warn] foreign holding kr: {e}")
     return result
@@ -2108,20 +2186,21 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
       .sort((a, b) => b.last - a.last);
 
     // 랭킹 박스: shapes로 배경 + annotations로 텍스트
-    const lineHeight = 0.040;  // 줄 간격 (paper 좌표)
+    const lineHeight = 0.038;  // 줄 간격 (paper 좌표)
     const boxTop = 0.985;
     const boxLeft = 0.012;
-    const boxPadV = 0.012;  // 위아래 여백
-    const boxWidth = 0.22;  // 박스 너비 (paper 좌표)
+    const boxPadTop = 0.020;   // 위쪽 여백
+    const boxPadBot = 0.022;   // 아래쪽 여백 (첫 줄 아래로 좀 더 많이)
+    const boxWidth = 0.22;     // 박스 너비 (paper 좌표)
 
     // 박스 shape (배경) — 11줄 전부 감싸도록 동적 높이
     const rankShape = {{
       type: 'rect',
       xref: 'paper', yref: 'paper',
-      x0: boxLeft - 0.005,
+      x0: boxLeft - 0.006,
       x1: boxLeft + boxWidth,
-      y0: boxTop - (ranking.length - 1) * lineHeight - boxPadV - 0.008,
-      y1: boxTop + boxPadV,
+      y0: boxTop - (ranking.length - 1) * lineHeight - boxPadBot,
+      y1: boxTop + boxPadTop,
       fillcolor: 'rgba(255,255,255,0.95)',
       line: {{color: '#D1D5DB', width: 1}},
       layer: 'above'
