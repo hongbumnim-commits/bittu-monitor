@@ -51,6 +51,9 @@ ECOS_FOREIGN_HOLDING_URL = (
     "https://ecos.bok.or.kr/api/StatisticSearch/{key}/json/kr/1/100"
     "/064Y001/MM/{start}/{end}/0001000"
 )
+# 공공데이터포털 서비스키 (data.go.kr) - GitHub Secret에 DATA_GO_KR_KEY로 등록
+DATA_GO_KR_KEY = os.environ.get("DATA_GO_KR_KEY", "")
+KOFIA_BASE = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService"
 
 def fetch_fred_series(series_id, name=None, days=LOOKBACK_DAYS * 3):
     start = (TODAY - dt.timedelta(days=days)).strftime("%Y-%m-%d")
@@ -525,6 +528,156 @@ def fetch_m7_plus_basket():
             result[ticker] = s.rename(ticker)
     print(f"  m7+ basket: {len(result)} tickers")
     return result
+
+
+# ================================================================
+# data.go.kr 금융투자협회 API - 신용공여잔고추이
+# ================================================================
+def fetch_credit_balance():
+    """
+    일자별 신용공여잔고 (신용거래융자 전체).
+    URL: getGrantingOfCreditBalanceInfo
+    응답 필드: basDt(YYYYMMDD), crdTrFingWhl(신용거래융자 전체, 백만원)
+    Returns: {date: eok_value}  (억원 단위)
+    """
+    if not DATA_GO_KR_KEY:
+        print("  [warn] fetch_credit_balance: DATA_GO_KR_KEY 환경변수 없음")
+        return {}
+
+    result = {}
+    start_dt = (TODAY - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y%m%d")
+    end_dt = TODAY.strftime("%Y%m%d")
+    page, per_page = 1, 100
+
+    while True:
+        params = {
+            "serviceKey": DATA_GO_KR_KEY,
+            "pageNo": page,
+            "numOfRows": per_page,
+            "resultType": "json",
+            "beginBasDt": start_dt,
+            "endBasDt": end_dt,
+        }
+        try:
+            r = requests.get(
+                f"{KOFIA_BASE}/getGrantingOfCreditBalanceInfo",
+                params=params, timeout=20
+            )
+            r.raise_for_status()
+            body = r.json().get("response", {}).get("body", {})
+            items = body.get("items", {})
+            if not items:
+                break
+            rows = items.get("item", [])
+            if isinstance(rows, dict):
+                rows = [rows]
+            for row in rows:
+                date_str = str(row.get("basDt", "")).strip()
+                val_raw = str(row.get("crdTrFingWhl", "")).replace(",", "").strip()
+                if len(date_str) == 8 and val_raw not in ("", "nan", "-"):
+                    try:
+                        d = dt.date(int(date_str[:4]), int(date_str[4:6]), int(date_str[6:8]))
+                        eok = round(float(val_raw) / 100, 0)  # 백만원 → 억원
+                        result[d] = eok
+                    except Exception:
+                        continue
+            total = int(body.get("totalCount", 0))
+            if page * per_page >= total:
+                break
+            page += 1
+        except Exception as e:
+            print(f"  [warn] fetch_credit_balance page {page}: {e}")
+            break
+
+    if result:
+        latest = max(result.keys())
+        print(f"  credit balance (data.go.kr KOFIA): {len(result)} rows, latest {latest}: {result[latest]:.0f}억")
+    else:
+        print("  [warn] fetch_credit_balance: 0 rows")
+    return result
+
+
+# ================================================================
+# data.go.kr 금융투자협회 API - 증시자금추이 (반대매매, 예탁금)
+# ================================================================
+def fetch_securities_market_capital():
+    """
+    일자별 증시자금추이.
+    URL: GetSecuritiesMarketTotalCapitalInfo
+    응답 필드:
+      basDt        - 기준일자
+      brkTrdUcolMny - 위탁매매미수금 (반대매매 proxy, 원)
+      invrDpsgAmt  - 투자자예탁금 (원)
+    Returns: {"forced_sale": {date: eok}, "investor_deposit": {date: eok}}
+    """
+    if not DATA_GO_KR_KEY:
+        print("  [warn] fetch_securities_market_capital: DATA_GO_KR_KEY 환경변수 없음")
+        return {"forced_sale": {}, "investor_deposit": {}}
+
+    forced_sale = {}
+    investor_deposit = {}
+    start_dt = (TODAY - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y%m%d")
+    end_dt = TODAY.strftime("%Y%m%d")
+    page, per_page = 1, 100
+
+    while True:
+        params = {
+            "serviceKey": DATA_GO_KR_KEY,
+            "pageNo": page,
+            "numOfRows": per_page,
+            "resultType": "json",
+            "beginBasDt": start_dt,
+            "endBasDt": end_dt,
+        }
+        try:
+            r = requests.get(
+                f"{KOFIA_BASE}/GetSecuritiesMarketTotalCapitalInfo",
+                params=params, timeout=20
+            )
+            r.raise_for_status()
+            body = r.json().get("response", {}).get("body", {})
+            items = body.get("items", {})
+            if not items:
+                break
+            rows = items.get("item", [])
+            if isinstance(rows, dict):
+                rows = [rows]
+            for row in rows:
+                date_str = str(row.get("basDt", "")).strip()
+                if len(date_str) != 8:
+                    continue
+                try:
+                    d = dt.date(int(date_str[:4]), int(date_str[4:6]), int(date_str[6:8]))
+                except Exception:
+                    continue
+                # 위탁매매미수금 → 억원 (원 단위 → /1e8)
+                fs_raw = str(row.get("brkTrdUcolMny", "")).replace(",", "").strip()
+                if fs_raw not in ("", "nan", "-"):
+                    try:
+                        forced_sale[d] = round(float(fs_raw) / 1e8, 1)
+                    except Exception:
+                        pass
+                # 투자자예탁금 → 억원
+                dp_raw = str(row.get("invrDpsgAmt", "")).replace(",", "").strip()
+                if dp_raw not in ("", "nan", "-"):
+                    try:
+                        investor_deposit[d] = round(float(dp_raw) / 1e8, 1)
+                    except Exception:
+                        pass
+            total = int(body.get("totalCount", 0))
+            if page * per_page >= total:
+                break
+            page += 1
+        except Exception as e:
+            print(f"  [warn] fetch_securities_market_capital page {page}: {e}")
+            break
+
+    if forced_sale:
+        latest = max(forced_sale.keys())
+        print(f"  market capital (data.go.kr KOFIA): {len(forced_sale)} rows, latest {latest}: 미수금 {forced_sale[latest]:.1f}억")
+    else:
+        print("  [warn] fetch_securities_market_capital: 0 rows")
+    return {"forced_sale": forced_sale, "investor_deposit": investor_deposit}
 
 
 # ================================================================
