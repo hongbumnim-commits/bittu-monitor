@@ -265,10 +265,11 @@ safePlot('c_kr_rel', [
 ], '코스피 vs 코스닥 상대 추세 (Base 100)', {yaxis: {title: 'Base 100'}});
 
 safePlot('c_kr_vkospi', [
-  {x: D.dates, y: D.vkospi, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VKOSPI', connectgaps: false, line: {color: '#A32D2D', width: 2.2}, fillcolor: 'rgba(163,45,45,0.10)'}
-], 'VKOSPI 공포지수', {yaxis: {title: 'VKOSPI', range: [0, 40]}, shapes: [
+  {x: D.dates, y: D.vkospi, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VKOSPI', connectgaps: true, line: {color: '#A32D2D', width: 2.2}, fillcolor: 'rgba(163,45,45,0.10)'}
+], 'VKOSPI 공포지수', {yaxis: {title: 'VKOSPI', range: [0, 80]}, shapes: [
   {type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 20, y1: 20, line: {color: '#BA7517', width: 1, dash: 'dot'}},
-  {type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 30, y1: 30, line: {color: '#A32D2D', width: 1, dash: 'dot'}}
+  {type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 30, y1: 30, line: {color: '#A32D2D', width: 1, dash: 'dot'}},
+  {type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 40, y1: 40, line: {color: '#A32D2D', width: 1.5, dash: 'dash'}}
 ]});
 
 safePlot('c_kr_kospi_abs', [
@@ -424,26 +425,28 @@ safePlot('c_us_cor1m', [{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines',
       .filter(x => x.last !== undefined && x.last !== null)
       .sort((a, b) => b.last - a.last);
 
-    // 랭킹 박스: 왼쪽 상단, 각 줄 색은 해당 라인 색과 일치
-    const lineHeight = 0.035;  // 줄 간격 (paper 좌표)
+    // 랭킹 박스: shapes로 배경 + annotations로 텍스트
+    const lineHeight = 0.040;  // 줄 간격 (paper 좌표)
     const boxTop = 0.985;
     const boxLeft = 0.012;
-    const rankAnnotations = [];
+    const boxPadV = 0.012;  // 위아래 여백
+    const boxWidth = 0.22;  // 박스 너비 (paper 좌표)
 
-    // 1) 배경 박스 (투명 흰색)
-    rankAnnotations.push({
+    // 박스 shape (배경) — 11줄 전부 감싸도록 동적 높이
+    const rankShape = {
+      type: 'rect',
       xref: 'paper', yref: 'paper',
-      x: boxLeft - 0.003, y: boxTop + 0.012,
-      xanchor: 'left', yanchor: 'top',
-      text: '', showarrow: false,
-      width: 210,
-      height: (ranking.length * lineHeight * 100) + 18,
-      bgcolor: 'rgba(255,255,255,0.94)',
-      bordercolor: '#D1D5DB', borderwidth: 1,
-      borderpad: 6
-    });
+      x0: boxLeft - 0.005,
+      x1: boxLeft + boxWidth,
+      y0: boxTop - (ranking.length - 1) * lineHeight - boxPadV - 0.008,
+      y1: boxTop + boxPadV,
+      fillcolor: 'rgba(255,255,255,0.95)',
+      line: {color: '#D1D5DB', width: 1},
+      layer: 'above'
+    };
 
-    // 2) 각 순위 텍스트 (색 = 라인 색과 정확히 일치, 크기 15)
+    // 각 순위 텍스트 (색 = 라인 색과 정확히 일치)
+    const rankAnnotations = [];
     ranking.forEach((x, i) => {
       const color = colorMap[x.key] || '#333';
       rankAnnotations.push({
@@ -463,6 +466,7 @@ safePlot('c_us_cor1m', [{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines',
       legend: {orientation: 'h', y: -0.08, x: 0.5, xanchor: 'center', font: {size: 12}},
       margin: {t: 60, r: 40, b: 90, l: 60},
       annotations: rankAnnotations,
+      shapes: [rankShape],
       hovermode: 'x unified'
     }), {displayModeBar: false, responsive: true});
   } catch (e) { console.error('m7 plot:', e); showEmpty(id); }
