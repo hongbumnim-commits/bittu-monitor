@@ -31,17 +31,6 @@ SECTOR_BASKETS = {
     "금융":     ["105560", "055550", "086790", "316140"],
 }
 
-# 네이버 봇 차단(403 Forbidden)을 뚫기 위한 초강력 헤더
-NAVER_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Sec-Ch-Ua": '"Chromium";v="122", "Google Chrome";v="122", "Not-A.Brand";v="99"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": '"Windows"',
-    "Upgrade-Insecure-Requests": "1"
-}
-
 def safe(fn_name, fn, default=None, retries=3, sleep=2):
     for i in range(retries):
         try:
@@ -64,23 +53,6 @@ def fetch_fdr(symbol, name=None, days=LOOKBACK_DAYS):
     return s.rename(name or symbol)
 
 
-def fetch_vkospi_naver():
-    url = "https://finance.naver.com/sise/sise_index.naver?code=VKOSPI"
-    r = requests.get(url, headers=NAVER_HEADERS, timeout=15)
-    r.encoding = "euc-kr"
-    soup = BeautifulSoup(r.text, "html.parser")
-    try:
-        elem = soup.select_one("#now_value")
-        if elem:
-            return float(elem.text.replace(",", "").strip())
-    except Exception:
-        pass
-    text = soup.get_text(" ", strip=True)
-    m = re.search(r"VKOSPI[^\d]{0,20}([\d]+\.[\d]+)", text)
-    if m:
-        return float(m.group(1))
-    return None
-
 
 def fetch_ust10y_fred():
     start = (TODAY - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%d")
@@ -93,75 +65,54 @@ def fetch_ust10y_fred():
     return s.rename("ust10y").dropna()
 
 
-def fetch_naver_deposit():
-    url = "https://finance.naver.com/sise/sise_deposit.naver"
-    r = requests.get(url, headers=NAVER_HEADERS, timeout=20)
-    r.encoding = "euc-kr"
+fetch_kofia_deposit_api():
+    """공공데이터포털(금융위원회) API를 이용한 신용잔고/반대매매 수집"""
     result = {"credit_balance_eok": None, "forced_sale_eok": None}
+    
+    # 깃허브 Secrets에 저장해둔 API 키를 안전하게 불러옴
+    api_key = os.environ.get("DATA_GO_KR_API_KEY")
+    if not api_key:
+        print("[error] API Key가 설정되지 않았습니다.")
+        return result
+
     try:
-        tables = pd.read_html(r.text, encoding="euc-kr")
-        for t in tables:
-            t_str = t.astype(str)
-            flat = " ".join([" ".join(row) for row in t_str.values.tolist()])
-            if ("신용잔고" in flat or "신용공여" in flat) and result["credit_balance_eok"] is None:
-                for row in t_str.values.tolist():
-                    if "신용" in " ".join(row):
-                        for cell in row:
-                            m = re.search(r"([\d,]+)", str(cell))
-                            if m:
-                                v = int(m.group(1).replace(",", ""))
-                                if v > 100000:
-                                    result["credit_balance_eok"] = v
-                                    break
-                        if result["credit_balance_eok"]: break
-            if "반대매매" in flat and result["forced_sale_eok"] is None:
-                for row in t_str.values.tolist():
-                    if "반대매매" in " ".join(row):
-                        for cell in row:
-                            m = re.search(r"([\d,]+)", str(cell))
-                            if m:
-                                try:
-                                    v = int(m.group(1).replace(",", ""))
-                                    if 10 <= v <= 100000:
-                                        result["forced_sale_eok"] = v
-                                        break
-                                except ValueError: continue
-                        if result["forced_sale_eok"]: break
-    except Exception:
-        pass
+        # 오픈 API 요청 주소 (JSON 형태로 요청)
+        url = "http://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockMarginTradingInfo"
+        
+        # 오늘 기준으로 최근 5일치 데이터를 요청하여 가장 최신 값을 찾음
+        params = {
+            "serviceKey": urllib.parse.unquote(api_key), # Encoding 키를 디코딩하여 사용
+            "resultType": "json",
+            "numOfRows": "5", 
+            "pageNo": "1",
+        }
+        
+        response = requests.get(url, params=params, timeout=15)
+        data = response.json()
+        
+        # 응답 데이터 파싱
+        items = data.get("response", {}).get("body", {}).get("items", {}).get("item", [])
+        
+        if items:
+            # 가장 최신 날짜(첫 번째 리스트)의 데이터를 가져옴
+            latest_data = items[0]
+            
+            # crdtBlncAmt: 신용거래 융자 잔고금액 (단위: 원) -> 억원 단위로 변환
+            if "crdtBlncAmt" in latest_data:
+                result["credit_balance_eok"] = int(float(latest_data["crdtBlncAmt"]) / 100000000)
+            
+            # nxtDdOpnprcFrcedRdptnAmt: 반대매매 금액 (단위: 원) -> 억원 단위로 변환
+            # (API 명세서에 따라 필드명이 다를 수 있으므로 데이터 확인 필요)
+            if "nxtDdOpnprcFrcedRdptnAmt" in latest_data:
+                result["forced_sale_eok"] = int(float(latest_data["nxtDdOpnprcFrcedRdptnAmt"]) / 100000000)
+
+        print(f"  API deposit: credit={result['credit_balance_eok']}, forced={result['forced_sale_eok']}")
+        
+    except Exception as e:
+        print(f"  [error] API deposit fetch failed: {e}")
+        
     return result
 
-
-def fetch_naver_foreign_flow():
-    url = "https://finance.naver.com/sise/investorDealTrendDay.naver"
-    r = requests.get(url, headers=NAVER_HEADERS, timeout=15)
-    r.encoding = "euc-kr"
-    result = {}
-    try:
-        tables = pd.read_html(r.text, encoding="euc-kr")
-        for t in tables:
-            cols = [str(c) for c in t.columns]
-            flat = " ".join(cols) + " " + " ".join([str(x) for x in t.values.flatten().tolist()[:50]])
-            if "외국인" in flat and ("날짜" in flat or "일자" in flat):
-                for row in t.itertuples(index=False):
-                    row_vals = [str(v) for v in row]
-                    date_match = None
-                    for v in row_vals:
-                        m = re.search(r"(\d{2,4})[./-](\d{1,2})[./-](\d{1,2})", v)
-                        if m:
-                            y, mo, d = m.groups()
-                            y = "20" + y if len(y) == 2 else y
-                            try:
-                                date_match = dt.date(int(y), int(mo), int(d))
-                                break
-                            except Exception: continue
-                    if not date_match: continue
-                    numeric_vals = [int(v.replace(",", "").replace("+", "").strip()) for v in row_vals if re.match(r"^-?\d+$", v.replace(",", "").replace("+", "").strip())]
-                    if len(numeric_vals) >= 3:
-                        result[date_match] = numeric_vals[1] if len(numeric_vals) >= 3 else numeric_vals[0]
-    except Exception:
-        pass
-    return result
 
 
 def fetch_sector_basket(tickers):
@@ -228,9 +179,7 @@ def update_data():
     for name, tickers in SECTOR_BASKETS.items():
         sectors[f"sec_{name}"] = safe(f"sector_{name}", lambda tt=tickers: fetch_sector_basket(tt), default=pd.Series(dtype=float)).rename(f"sec_{name}")
 
-    deposit = safe("deposit", fetch_naver_deposit, default={"credit_balance_eok": None, "forced_sale_eok": None})
-    foreign_flow = safe("foreign", fetch_naver_foreign_flow, default={})
-    vkospi_today = safe("vkospi_naver", fetch_vkospi_naver, default=None)
+
 
     series_dict = {
         "kospi": kospi, "kosdaq": kosdaq, "samsung": samsung, "hynix": hynix,
