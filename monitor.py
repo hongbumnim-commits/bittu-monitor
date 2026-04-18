@@ -1,5 +1,5 @@
 """
-빚투 모니터 v6 - 주말/휴일 0 처리 오류 완벽 해결 및 봇 차단 강력 우회
+빚투 모니터 v8 - 네이버 크롤링 완전 제거 및 공공데이터 API / pykrx 적용
 """
 
 import os
@@ -7,13 +7,14 @@ import json
 import time
 import datetime as dt
 import re
+import urllib.parse
 from pathlib import Path
 
 import pandas as pd
 import numpy as np
 import requests
-from bs4 import BeautifulSoup
 import FinanceDataReader as fdr
+from pykrx import stock  # 네이버 대체용 한국거래소 공식 라이브러리
 
 ROOT = Path(__file__).parent
 DATA_DIR = ROOT / "data"
@@ -30,6 +31,7 @@ SECTOR_BASKETS = {
     "2차전지":  ["373220", "006400", "051910", "096770"],
     "금융":     ["105560", "055550", "086790", "316140"],
 }
+
 
 def safe(fn_name, fn, default=None, retries=3, sleep=2):
     for i in range(retries):
@@ -53,6 +55,18 @@ def fetch_fdr(symbol, name=None, days=LOOKBACK_DAYS):
     return s.rename(name or symbol)
 
 
+def fetch_vkospi_pykrx():
+    """pykrx 라이브러리를 이용한 VKOSPI(티커: 2004) 수집"""
+    try:
+        start_date = (TODAY - dt.timedelta(days=10)).strftime("%Y%m%d")
+        end_date = TODAY.strftime("%Y%m%d")
+        df = stock.get_index_ohlcv(start_date, end_date, "2004")
+        if not df.empty:
+            return float(df['종가'].iloc[-1])
+    except Exception as e:
+        print(f"[error] fetch_vkospi_pykrx: {e}")
+    return None
+
 
 def fetch_ust10y_fred():
     start = (TODAY - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%d")
@@ -65,23 +79,20 @@ def fetch_ust10y_fred():
     return s.rename("ust10y").dropna()
 
 
-fetch_kofia_deposit_api():
-    """공공데이터포털(금융위원회) API를 이용한 신용잔고/반대매매 수집"""
+def fetch_kofia_deposit_api():
+    """공공데이터포털(금융투자협회종합통계정보) API를 이용한 신용잔고 수집"""
     result = {"credit_balance_eok": None, "forced_sale_eok": None}
     
-    # 깃허브 Secrets에 저장해둔 API 키를 안전하게 불러옴
     api_key = os.environ.get("DATA_GO_KR_API_KEY")
     if not api_key:
-        print("[error] API Key가 설정되지 않았습니다.")
+        print("[error] DATA_GO_KR_API_KEY is not set in Secrets.")
         return result
 
     try:
-        # 오픈 API 요청 주소 (JSON 형태로 요청)
-        url = "http://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockMarginTradingInfo"
-        
-        # 오늘 기준으로 최근 5일치 데이터를 요청하여 가장 최신 값을 찾음
+        # 금융투자협회종합통계정보 -> 증시자금 추이
+        url = "http://apis.data.go.kr/1160100/service/GetKofiaStatsInfoService/getStkMktFundTrend"
         params = {
-            "serviceKey": urllib.parse.unquote(api_key), # Encoding 키를 디코딩하여 사용
+            "serviceKey": urllib.parse.unquote(api_key), 
             "resultType": "json",
             "numOfRows": "5", 
             "pageNo": "1",
@@ -90,29 +101,51 @@ fetch_kofia_deposit_api():
         response = requests.get(url, params=params, timeout=15)
         data = response.json()
         
-        # 응답 데이터 파싱
         items = data.get("response", {}).get("body", {}).get("items", {}).get("item", [])
         
         if items:
-            # 가장 최신 날짜(첫 번째 리스트)의 데이터를 가져옴
             latest_data = items[0]
-            
-            # crdtBlncAmt: 신용거래 융자 잔고금액 (단위: 원) -> 억원 단위로 변환
-            if "crdtBlncAmt" in latest_data:
-                result["credit_balance_eok"] = int(float(latest_data["crdtBlncAmt"]) / 100000000)
-            
-            # nxtDdOpnprcFrcedRdptnAmt: 반대매매 금액 (단위: 원) -> 억원 단위로 변환
-            # (API 명세서에 따라 필드명이 다를 수 있으므로 데이터 확인 필요)
-            if "nxtDdOpnprcFrcedRdptnAmt" in latest_data:
-                result["forced_sale_eok"] = int(float(latest_data["nxtDdOpnprcFrcedRdptnAmt"]) / 100000000)
+            # crdtLoanBal: 신용거래융자 잔고 (원 단위 기준)
+            if "crdtLoanBal" in latest_data:
+                val = float(latest_data["crdtLoanBal"])
+                # 원 단위를 억원 단위로 변환 (1억 = 100,000,000)
+                if val > 100000000000:
+                    result["credit_balance_eok"] = int(val / 100000000)
 
-        print(f"  API deposit: credit={result['credit_balance_eok']}, forced={result['forced_sale_eok']}")
+        # 협회 API에는 일일 반대매매 금액이 명시적으로 제공되지 않으므로
+        # 에러 방지를 위해 None 상태를 유지하여 차트에는 그리지 않도록 함
+        print(f"  API deposit: credit={result['credit_balance_eok']}")
         
     except Exception as e:
         print(f"  [error] API deposit fetch failed: {e}")
         
     return result
 
+
+def fetch_foreign_flow_pykrx():
+    """pykrx 라이브러리를 이용한 코스피+코스닥 외국인 순매수(억) 합산"""
+    result = {}
+    try:
+        start_date = (TODAY - dt.timedelta(days=15)).strftime("%Y%m%d")
+        end_date = TODAY.strftime("%Y%m%d")
+        
+        df_kpi = stock.get_market_trading_value_by_date(start_date, end_date, "KOSPI")
+        df_kdq = stock.get_market_trading_value_by_date(start_date, end_date, "KOSDAQ")
+        
+        for date in df_kpi.index:
+            date_obj = date.date()
+            # pykrx의 반환 컬럼명 대응 (외국인합계 또는 외국인)
+            val_kpi = df_kpi.loc[date, '외국인합계'] if '외국인합계' in df_kpi.columns else (df_kpi.loc[date, '외국인'] if '외국인' in df_kpi.columns else 0)
+            val_kdq = df_kdq.loc[date, '외국인합계'] if '외국인합계' in df_kdq.columns else (df_kdq.loc[date, '외국인'] if '외국인' in df_kdq.columns else 0)
+            
+            # 원(KRW) 단위를 억원(100,000,000)으로 변환
+            total_net_buy = (val_kpi + val_kdq) / 100000000
+            result[date_obj] = int(total_net_buy)
+            
+    except Exception as e:
+        print(f"  [error] pykrx foreign flow: {e}")
+        
+    return result
 
 
 def fetch_sector_basket(tickers):
@@ -179,7 +212,10 @@ def update_data():
     for name, tickers in SECTOR_BASKETS.items():
         sectors[f"sec_{name}"] = safe(f"sector_{name}", lambda tt=tickers: fetch_sector_basket(tt), default=pd.Series(dtype=float)).rename(f"sec_{name}")
 
-
+    # 네이버 대신 API와 pykrx로 완전히 교체된 수집 로직
+    deposit = safe("deposit", fetch_kofia_deposit_api, default={"credit_balance_eok": None, "forced_sale_eok": None})
+    foreign_flow = safe("foreign", fetch_foreign_flow_pykrx, default={})
+    vkospi_today = safe("vkospi_pykrx", fetch_vkospi_pykrx, default=None)
 
     series_dict = {
         "kospi": kospi, "kosdaq": kosdaq, "samsung": samsung, "hynix": hynix,
@@ -282,12 +318,10 @@ def compute_regime(index_series):
 
 
 def render_dashboard(df, signals, regime_kr, regime_us):
-    # 핵심 필터: 코스피 데이터가 없는 날(주말/휴일)을 아예 삭제하여 차트 바닥 찍기 원천 차단
     df_plot = df.dropna(subset=["kospi"]).sort_values("date").tail(350).copy() if not df.empty else pd.DataFrame()
 
     def col(c):
         if df_plot.empty or c not in df_plot.columns: return []
-        # 누락된 데이터를 강제로 0으로 만들지 않고 이전 값으로 부드럽게 이음(ffill)
         s = pd.to_numeric(df_plot[c], errors="coerce").ffill().bfill()
         return [None if pd.isna(x) else round(x, 2) for x in s]
 
@@ -310,7 +344,6 @@ def render_dashboard(df, signals, regime_kr, regime_us):
   <div class="chart"><div id="c_kr_idx" style="height:300px;"></div></div>
   <div class="chart"><div id="c_kr_vkospi" style="height:300px;"></div></div>
   <div class="chart"><div id="c_kr_credit" style="height:300px;"></div></div>
-  <div class="chart"><div id="c_kr_forced" style="height:280px;"></div></div>
   <div class="chart"><div id="c_kr_foreign" style="height:300px;"></div></div>
   <div class="chart"><div id="c_kr_semi" style="height:280px;"></div></div>
   <div class="chart"><div id="c_kr_sector" style="height:320px;"></div></div>
@@ -336,7 +369,6 @@ plot('c_kr_credit', [
   {{x: D.dates, y: D.credit, type: 'scatter', name: '신용잔고', yaxis: 'y2', line: {{color: '#993C1D'}}}}
 ], '코스피 vs 신용잔고(억)');
 
-plot('c_kr_forced', [{{x: D.dates, y: D.forced, type: 'bar', name: '반대매매'}}], '일일 반대매매(억)');
 plot('c_kr_foreign', [{{x: D.dates, y: D.foreign, type: 'bar', name: '외국인'}}], '외국인 순매수(억)');
 
 plot('c_kr_semi', [
