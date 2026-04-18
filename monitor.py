@@ -33,13 +33,11 @@ TODAY = dt.datetime.now(KST).date()
 LOOKBACK_DAYS = 400
 
 SECTOR_BASKETS = {
-    "반도체":   ["005930", "000660"],
-    "자동차":   ["005380", "000270", "012330"],
-    "조선방산": ["329180", "042660", "010620", "267250"],
-    "금융":     ["105560", "055550", "086790", "316140"],
+    "반도체":   ["005930", "000660", "042700", "403870"],
+    "방산조선":  ["012450", "079550", "329180", "042660"],
+    "바이오":   ["068270", "207940", "196170", "328130"],
     "2차전지":  ["373220", "006400", "051910", "096770"],
-    "인터넷":   ["035420", "035720"],
-    "바이오":   ["207940", "068270", "326030"],
+    "금융":     ["105560", "055550", "086790", "316140"],
 }
 
 
@@ -131,9 +129,51 @@ def fetch_cor1m():
     except Exception as e:
         print(f"  [warn] yahoo cor1m: {e}")
 
+    s = fetch_investing_history("https://www.investing.com/indices/cboe-1month-implied-correlation-historical-data", "cor1m")
+    if not s.empty:
+        return s
+
     print(f"  [warn] cor1m: all sources failed")
     return pd.Series(dtype=float, name="cor1m")
 
+
+
+def fetch_investing_history(url, name, days=LOOKBACK_DAYS):
+    """Investing.com historical page fallback scraper."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.investing.com/",
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=20)
+        r.raise_for_status()
+        tables = pd.read_html(r.text)
+        cutoff = TODAY - dt.timedelta(days=days)
+        for t in tables:
+            cols = [str(c) for c in t.columns]
+            flat_cols = " ".join(cols).lower()
+            if "date" not in flat_cols or "price" not in flat_cols:
+                continue
+            date_col = next((c for c in t.columns if str(c).lower().startswith("date")), t.columns[0])
+            price_col = next((c for c in t.columns if "price" in str(c).lower()), None)
+            if price_col is None:
+                continue
+            tmp = t[[date_col, price_col]].copy()
+            tmp.columns = ["date", "price"]
+            tmp["date"] = pd.to_datetime(tmp["date"], errors="coerce")
+            tmp["price"] = pd.to_numeric(tmp["price"].astype(str).str.replace(",", "", regex=False), errors="coerce")
+            tmp = tmp.dropna().sort_values("date")
+            if tmp.empty:
+                continue
+            s = pd.Series(tmp["price"].values, index=tmp["date"].dt.date, name=name)
+            s = s[s.index >= cutoff]
+            if not s.empty:
+                print(f"  {name} via investing: {len(s)} rows, latest {float(s.iloc[-1]):.2f}")
+                return s
+    except Exception as e:
+        print(f"  [warn] investing {name}: {e}")
+    return pd.Series(dtype=float, name=name)
 
 def fetch_naver_deposit():
     url = "https://finance.naver.com/sise/sise_deposit.naver"
@@ -319,6 +359,12 @@ def fetch_fdr_vkospi():
                 print(f"  [warn] yahoo {symbol} out of range ({last:.2f})")
         except Exception as e:
             print(f"  [warn] yahoo vkospi {symbol}: {e}")
+
+    s = fetch_investing_history("https://www.investing.com/indices/kospi-volatility-historical-data", "vkospi")
+    if not s.empty:
+        last = float(s.iloc[-1])
+        if 5 <= last <= 100:
+            return s
 
     print(f"  [warn] vkospi: all sources failed")
     return pd.Series(dtype=float, name="vkospi")
@@ -510,7 +556,7 @@ MAIN_COLS = [
     "credit_balance_eok", "forced_sale_eok", "foreign_net_eok",
     "samsung_ret_pct", "hynix_ret_pct",
     "sp500", "nasdaq", "vix", "nvda", "ust10y", "cor1m",
-    "sec_반도체", "sec_자동차", "sec_조선방산", "sec_금융", "sec_2차전지", "sec_인터넷", "sec_바이오",
+    "sec_반도체", "sec_방산조선", "sec_바이오", "sec_2차전지", "sec_금융",
 ]
 
 
@@ -992,16 +1038,12 @@ def render_regime_block(regime, title):
     """
 
 
+
 def render_dashboard(df, signals, regime_kr, regime_us):
     df_plot = df.sort_values("date").tail(250).copy() if not df.empty else pd.DataFrame()
 
-    def col(c):
-        if df_plot.empty or c not in df_plot.columns:
-            return []
-        return pd.to_numeric(df_plot[c], errors="coerce").ffill().fillna(0).round(2).tolist()
-
-    def _sanitize_series(s, min_val=None, max_val=None, max_daily_jump_pct=None):
-        s = pd.to_numeric(s, errors="coerce").copy()
+    def sanitize_series(series, min_val=None, max_val=None, max_daily_jump_pct=None):
+        s = pd.to_numeric(series, errors="coerce").copy()
         if min_val is not None:
             s = s.where(s >= min_val)
         if max_val is not None:
@@ -1012,104 +1054,95 @@ def render_dashboard(df, signals, regime_kr, regime_us):
             s = s.where((jump <= max_daily_jump_pct) | prev.isna())
         return s
 
-    def col_raw(c):
+    def series_connected(c, *, min_val=None, max_val=None, max_daily_jump_pct=None):
         if df_plot.empty or c not in df_plot.columns:
             return []
-        return pd.to_numeric(df_plot[c], errors="coerce").fillna(0).round(2).tolist()
+        s = sanitize_series(df_plot[c], min_val=min_val, max_val=max_val, max_daily_jump_pct=max_daily_jump_pct).ffill()
+        return [None if pd.isna(v) else round(float(v), 2) for v in s]
 
-    def col_bar(c):
+    def series_nullable(c):
         if df_plot.empty or c not in df_plot.columns:
             return []
         s = pd.to_numeric(df_plot[c], errors="coerce")
         return [None if pd.isna(v) else round(float(v), 2) for v in s]
 
-    def col_connected(c, *, min_val=None, max_val=None, max_daily_jump_pct=None):
-        """중간 결측/이상치를 정리한 뒤 앞값으로 연결. 앞쪽 미존재 구간만 None 유지."""
-        if df_plot.empty or c not in df_plot.columns:
-            return []
-        s = _sanitize_series(df_plot[c], min_val=min_val, max_val=max_val, max_daily_jump_pct=max_daily_jump_pct)
-        s = s.ffill()
-        return [None if pd.isna(v) else round(float(v), 2) for v in s]
-
-    dates = [d.strftime("%Y-%m-%d") for d in df_plot["date"]] if not df_plot.empty else []
-
     def ma_series(c, window=200):
-        """MA 시리즈. 계산 불가 구간(window 전)은 None으로 반환."""
-        if df.empty or c not in df.columns:
+        if df.empty or c not in df.columns or df_plot.empty:
             return []
         full = pd.to_numeric(df[c], errors="coerce")
-        ma_full = full.rolling(window).mean().tail(len(df_plot) if not df_plot.empty else 0)
+        ma_full = full.rolling(window).mean().tail(len(df_plot))
         return [None if pd.isna(v) else round(float(v), 2) for v in ma_full]
 
-    def cum_base100(c, *, max_daily_jump_pct=25):
-        """플롯 구간 내 첫 유효값 기준 Base 100. 비정상 급등락/0값 제거."""
+    def base100(c, *, max_daily_jump_pct=25):
         if df_plot.empty or c not in df_plot.columns:
             return []
-        s = _sanitize_series(df_plot[c], min_val=1, max_daily_jump_pct=max_daily_jump_pct).ffill()
+        s = sanitize_series(df_plot[c], min_val=1, max_daily_jump_pct=max_daily_jump_pct).ffill()
         valid = s.dropna()
         if valid.empty:
             return []
         base = valid.iloc[0]
-        if base == 0 or pd.isna(base):
+        if pd.isna(base) or base == 0:
             return []
-        result = (s / base) * 100
-        return [None if pd.isna(v) else round(float(v), 2) for v in result]
-
-    def rebased_plot_series(c):
-        return cum_base100(c, max_daily_jump_pct=25)
+        out = (s / base) * 100
+        return [None if pd.isna(v) else round(float(v), 2) for v in out]
 
     def y_range(values_list, pad=0.04):
-        """여러 series를 합쳐서 min/max로 y-range 제안. 값 없으면 None."""
-        all_vals = []
+        vals = []
         for vs in values_list:
-            all_vals.extend([v for v in vs if v is not None and v > 0])
-        if not all_vals:
+            vals.extend([v for v in vs if v is not None])
+        if not vals:
             return None
-        lo, hi = min(all_vals), max(all_vals)
+        lo, hi = min(vals), max(vals)
         span = hi - lo
-        return [lo - span * pad, hi + span * pad]
+        if span == 0:
+            span = max(abs(lo) * 0.05, 1)
+        return [round(lo - span * pad, 2), round(hi + span * pad, 2)]
 
-    # 차트별 Y축 range 미리 계산
-    sp500_vals = col_connected("sp500", min_val=1000, max_daily_jump_pct=20)
-    nasdaq_vals = col_connected("nasdaq", min_val=1000, max_daily_jump_pct=20)
-    sp500_ma = ma_series("sp500", 200)
-    nasdaq_ma = ma_series("nasdaq", 200)
-    vkospi_vals = col_connected("vkospi", min_val=5, max_val=100, max_daily_jump_pct=50)
-    cor1m_vals = col_connected("cor1m", min_val=1, max_val=100, max_daily_jump_pct=50)
+    dates = [d.strftime("%Y-%m-%d") for d in df_plot["date"]] if not df_plot.empty else []
+
+    kospi = series_connected("kospi", min_val=1000, max_daily_jump_pct=20)
+    kosdaq = series_connected("kosdaq", min_val=300, max_daily_jump_pct=20)
+    sp500 = series_connected("sp500", min_val=1000, max_daily_jump_pct=20)
+    nasdaq = series_connected("nasdaq", min_val=1000, max_daily_jump_pct=20)
+    vkospi = series_connected("vkospi", min_val=5, max_val=100, max_daily_jump_pct=60)
+    cor1m = series_connected("cor1m", min_val=1, max_val=100, max_daily_jump_pct=60)
 
     js_data = {
         "dates": dates,
-        "kospi": col_connected("kospi", min_val=1000, max_daily_jump_pct=20), "kospi_ma200": ma_series("kospi", 200),
-        "kosdaq": col_connected("kosdaq", min_val=300, max_daily_jump_pct=20),
-        # 반도체 양대장 — 누적 수익률 (Base 100)
-        "kospi_base100": cum_base100("kospi"),
-        "kosdaq_base100": cum_base100("kosdaq"),
-        "samsung_base100": cum_base100("samsung"),
-        "hynix_base100": cum_base100("hynix"),
-        "samsung_ret": col_raw("samsung_ret_pct"), "hynix_ret": col_raw("hynix_ret_pct"),
-        "vkospi": vkospi_vals,
-        "credit": col_connected("credit_balance_eok", min_val=100000, max_daily_jump_pct=15),
-        "forced": col_bar("forced_sale_eok"),
-        "foreign": col_bar("foreign_net_eok"),
-        "sp500": sp500_vals, "sp500_ma200": sp500_ma,
-        "nasdaq": nasdaq_vals, "nasdaq_ma200": nasdaq_ma,
-        "vix": col_connected("vix", min_val=5, max_val=100, max_daily_jump_pct=60), "nvda": col_connected("nvda", min_val=10, max_daily_jump_pct=30),
-        "ust10y": col_connected("ust10y", min_val=0, max_val=10, max_daily_jump_pct=20),
-        "cor1m": cor1m_vals,
-        "sec_반도체": rebased_plot_series("sec_반도체"),
-        "sec_자동차": rebased_plot_series("sec_자동차"),
-        "sec_조선방산": rebased_plot_series("sec_조선방산"),
-        "sec_금융": rebased_plot_series("sec_금융"),
-        "sec_2차전지": rebased_plot_series("sec_2차전지"),
-        "sec_인터넷": rebased_plot_series("sec_인터넷"),
-        "sec_바이오": rebased_plot_series("sec_바이오"),
-        # Y축 range 힌트
-        "sp500_range": y_range([sp500_vals, sp500_ma]),
-        "nasdaq_range": y_range([nasdaq_vals, nasdaq_ma]),
+        "kospi": kospi,
+        "kosdaq": kosdaq,
+        "kospi_ma200": ma_series("kospi", 200),
+        "kosdaq_ma200": ma_series("kosdaq", 200),
+        "kospi_base100": base100("kospi"),
+        "kosdaq_base100": base100("kosdaq"),
+        "samsung_base100": base100("samsung"),
+        "hynix_base100": base100("hynix"),
+        "vkospi": vkospi,
+        "credit": series_connected("credit_balance_eok", min_val=100000, max_daily_jump_pct=15),
+        "forced": series_nullable("forced_sale_eok"),
+        "foreign": series_nullable("foreign_net_eok"),
+        "sp500": sp500,
+        "sp500_ma200": ma_series("sp500", 200),
+        "nasdaq": nasdaq,
+        "nasdaq_ma200": ma_series("nasdaq", 200),
+        "vix": series_connected("vix", min_val=5, max_val=100, max_daily_jump_pct=60),
+        "nvda": series_connected("nvda", min_val=10, max_daily_jump_pct=40),
+        "ust10y": series_connected("ust10y", min_val=0, max_val=10, max_daily_jump_pct=20),
+        "cor1m": cor1m,
+        "sec_반도체": base100("sec_반도체"),
+        "sec_자동차": base100("sec_자동차"),
+        "sec_조선방산": base100("sec_조선방산"),
+        "sec_금융": base100("sec_금융"),
+        "sec_2차전지": base100("sec_2차전지"),
+        "sec_인터넷": base100("sec_인터넷"),
+        "sec_바이오": base100("sec_바이오"),
+        "sp500_range": y_range([sp500, ma_series("sp500", 200)]),
+        "nasdaq_range": y_range([nasdaq, ma_series("nasdaq", 200)]),
+        "kospi_range": y_range([kospi, ma_series("kospi", 200)]),
+        "kosdaq_range": y_range([kosdaq, ma_series("kosdaq", 200)]),
     }
 
     last_date = df_plot["date"].iloc[-1].strftime("%Y년 %m월 %d일") if not df_plot.empty else "대기"
-
     kr_color = COLOR.get(signals["label_kr"], "#888")
     us_color = COLOR.get(signals["label_us"], "#888")
 
@@ -1143,13 +1176,11 @@ def render_dashboard(df, signals, regime_kr, regime_us):
   h1 {{ font-size: 26px; font-weight: 600; margin: 0 0 6px; }}
   .meta {{ color: #888; font-size: 13px; margin-bottom: 20px; }}
   .tabs {{ display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 2px solid #eee; }}
-  .tab {{ padding: 12px 22px; cursor: pointer; font-weight: 500; font-size: 15px; color: #666;
-          border-bottom: 2px solid transparent; margin-bottom: -2px; }}
+  .tab {{ padding: 12px 22px; cursor: pointer; font-weight: 500; font-size: 15px; color: #666; border-bottom: 2px solid transparent; margin-bottom: -2px; }}
   .tab.active {{ color: #222; border-bottom-color: #222; }}
   .pane {{ display: none; }}
   .pane.active {{ display: block; }}
-  .overall {{ background: white; padding: 18px 22px; border-radius: 12px; margin-bottom: 20px;
-              display: flex; justify-content: space-between; align-items: center; }}
+  .overall {{ background: white; padding: 18px 22px; border-radius: 12px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }}
   .overall-label {{ font-size: 13px; color: #888; }}
   .overall-value {{ font-size: 28px; font-weight: 600; }}
   .regime-block {{ background: white; padding: 18px 20px; border-radius: 12px; margin-bottom: 20px; }}
@@ -1161,8 +1192,7 @@ def render_dashboard(df, signals, regime_kr, regime_us):
   .regime-value {{ font-size: 20px; font-weight: 600; margin-bottom: 2px; }}
   .regime-score {{ font-size: 11px; color: #aaa; margin-bottom: 8px; }}
   .regime-reasons {{ font-size: 12px; color: #555; line-height: 1.6; }}
-  .signal-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-                   gap: 12px; margin-bottom: 20px; }}
+  .signal-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-bottom: 20px; }}
   .sig {{ background: white; padding: 14px 16px; border-radius: 10px; border-top: 4px solid; }}
   .sig-name {{ font-size: 12px; color: #888; margin-bottom: 4px; }}
   .sig-status {{ font-size: 17px; font-weight: 600; margin-bottom: 6px; }}
@@ -1185,46 +1215,36 @@ def render_dashboard(df, signals, regime_kr, regime_us):
 
 <div id="pane-kr" class="pane active">
   {regime_kr_html}
-
   <div class="section-title">단기 위험 신호 (일간)</div>
   <div class="overall" style="border-left: 6px solid {kr_color};">
-    <div>
-      <div class="overall-label">한국 위험도 점수</div>
-      <div class="overall-value" style="color: {kr_color};">{signals['label_kr']}</div>
-    </div>
+    <div><div class="overall-label">한국 위험도 점수</div><div class="overall-value" style="color: {kr_color};">{signals['label_kr']}</div></div>
     <div style="font-size: 14px; color: #888;">{signals['score_kr']} / {signals['max_kr']}점</div>
   </div>
-
   <div class="signal-grid">{kr_cards}</div>
-
   <div class="section-title">차트</div>
   <div class="chart-grid">
     <div class="chart"><div id="c_kr_rel" style="height:320px;"></div></div>
-    <div class="chart"><div id="c_kr_abs" style="height:320px;"></div></div>
+    <div class="chart"><div id="c_kr_vkospi" style="height:320px;"></div></div>
   </div>
   <div class="chart-grid">
-    <div class="chart"><div id="c_kr_vkospi" style="height:300px;"></div></div>
-    </div>
+    <div class="chart"><div id="c_kr_kospi_abs" style="height:280px;"></div></div>
+    <div class="chart"><div id="c_kr_kosdaq_abs" style="height:280px;"></div></div>
+  </div>
   <div class="chart"><div id="c_kr_credit" style="height:300px;"></div></div>
   <div class="chart"><div id="c_kr_forced" style="height:280px;"></div></div>
+  <div class="chart"><div id="c_kr_foreign" style="height:300px;"></div></div>
   <div class="chart"><div id="c_kr_semi" style="height:280px;"></div></div>
   <div class="chart"><div id="c_kr_sector" style="height:320px;"></div></div>
 </div>
 
 <div id="pane-us" class="pane">
   {regime_us_html}
-
   <div class="section-title">단기 위험 신호 (일간)</div>
   <div class="overall" style="border-left: 6px solid {us_color};">
-    <div>
-      <div class="overall-label">미국 위험도 점수</div>
-      <div class="overall-value" style="color: {us_color};">{signals['label_us']}</div>
-    </div>
+    <div><div class="overall-label">미국 위험도 점수</div><div class="overall-value" style="color: {us_color};">{signals['label_us']}</div></div>
     <div style="font-size: 14px; color: #888;">{signals['score_us']} / {signals['max_us']}점</div>
   </div>
-
   <div class="signal-grid">{us_cards}</div>
-
   <div class="section-title">차트</div>
   <div class="chart-grid">
     <div class="chart"><div id="c_us_sp" style="height:300px;"></div></div>
@@ -1238,146 +1258,122 @@ def render_dashboard(df, signals, regime_kr, regime_us):
   <div class="chart"><div id="c_us_cor1m" style="height:300px;"></div></div>
 </div>
 
-<div class="footer">
-  데이터: FinanceDataReader, FRED(미국 10Y), 네이버 금융(신용잔고/VKOSPI/외국인) ·
-  추세 전망은 이동평균·모멘텀·52주 범위 기반 통계 모델 (확정적 예측 아님) ·
-  매일 평일 한국시간 17:30 GitHub Actions로 1회 실행 · 투자 권유 아님
-</div>
+<div class="footer">데이터: FinanceDataReader, FRED(미국 10Y), 네이버 금융/공공데이터/보조 스크래핑 · 투자 권유 아님</div>
 
 <script>
 const D = {json.dumps(js_data, ensure_ascii=False)};
 const base = {{
   margin: {{t: 30, r: 45, b: 35, l: 50}}, font: {{family: 'system-ui'}},
-  paper_bgcolor: 'white', plot_bgcolor: 'white',
-  legend: {{orientation: 'h', y: -0.2}},
-  hovermode: 'x unified'
+  paper_bgcolor: 'white', plot_bgcolor: 'white', legend: {{orientation: 'h', y: -0.2}}, hovermode: 'x unified'
 }};
 
-const smoothLine = (color, width=2) => ({{color, width, shape: 'spline', smoothing: 0.35}});
-function hasData(arr) {{ return Array.isArray(arr) && arr.some(v => v !== null && v !== undefined && !Number.isNaN(v)); }}
-function emptyChart(id, message) {{
-  document.getElementById(id).innerHTML = `<div style="height:100%;display:flex;align-items:center;justify-content:center;color:#888;font-size:14px;">${{message}}</div>`;
-}}
-function plot(id, traces, title, extra) {{
-  if (!D.dates.length) {{ emptyChart(id, '데이터 대기'); return; }}
-  const hasAny = traces.some(t => hasData(t.y || []));
-  if (!hasAny) {{ emptyChart(id, '데이터 수집 실패 또는 데이터 없음'); return; }}
-  Plotly.newPlot(id, traces, {{...base, title: {{text: title, font: {{size: 13}}}}, ...(extra || {{}})}}, {{displayModeBar: false, responsive: true}});
+function bindTabs() {{
+  document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', e => {{
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.pane').forEach(x => x.classList.remove('active'));
+    e.currentTarget.classList.add('active');
+    const pane = document.getElementById('pane-' + e.currentTarget.dataset.tab);
+    if (pane) pane.classList.add('active');
+    setTimeout(() => window.dispatchEvent(new Event('resize')), 120);
+  }}));
 }}
 
-plot('c_kr_rel', [
-  {{x: D.dates, y: D.kospi_base100, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: smoothLine('#185FA5', 2.8)}},
-  {{x: D.dates, y: D.kosdaq_base100, type: 'scatter', mode: 'lines', name: '코스닥', connectgaps: true, line: smoothLine('#534AB7', 2.8)}}
+function hasValues(arr) {{
+  return Array.isArray(arr) && arr.some(v => v !== null && v !== undefined && !Number.isNaN(v));
+}}
+function showEmpty(id, message='데이터 수집 실패 또는 데이터 없음') {{
+  const el = document.getElementById(id);
+  if (el) el.innerHTML = `<div style="height:100%;display:flex;align-items:center;justify-content:center;color:#888;font-size:13px;">${{message}}</div>`;
+}}
+function safePlot(id, traces, title, extra) {{
+  try {{
+    const valid = (traces || []).filter(t => hasValues(t.y));
+    if (!D.dates.length || valid.length === 0) {{ showEmpty(id); return; }}
+    Plotly.newPlot(id, valid, {{...base, title: {{text: title, font: {{size: 13}}}}, ...(extra || {{}})}});
+  }} catch (err) {{
+    console.error('plot error', id, err);
+    showEmpty(id, '차트 렌더링 실패');
+  }}
+}}
+
+bindTabs();
+
+safePlot('c_kr_rel', [
+  {{x: D.dates, y: D.kospi_base100, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#185FA5', width: 2.5}}}},
+  {{x: D.dates, y: D.kosdaq_base100, type: 'scatter', mode: 'lines', name: '코스닥', connectgaps: true, line: {{color: '#534AB7', width: 2.5}}}}
 ], '코스피 vs 코스닥 상대 추세 (Base 100)', {{yaxis: {{title: 'Base 100'}}}});
 
-plot('c_kr_abs', [
-  {{x: D.dates, y: D.kospi, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: smoothLine('#185FA5', 2.6)}},
-  {{x: D.dates, y: D.kospi_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {{color: '#A32D2D', width: 1.5, dash: 'dash'}}}}
-], '코스피 절대 추세', {{yaxis: {{title: '코스피'}}, xaxis: {{showgrid: true}}}});
+safePlot('c_kr_vkospi', [
+  {{x: D.dates, y: D.vkospi, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VKOSPI', connectgaps: false, line: {{color: '#A32D2D', width: 2.2}}, fillcolor: 'rgba(163,45,45,0.10)'}}
+], 'VKOSPI 공포지수', {{yaxis: {{title: 'VKOSPI', range: [0, 40]}}, shapes: [
+  {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 20, y1: 20, line: {{color: '#BA7517', width: 1, dash: 'dot'}}}},
+  {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 30, y1: 30, line: {{color: '#A32D2D', width: 1, dash: 'dot'}}}}
+]}});
 
-plot('c_kr_vkospi', [
-  {{x: D.dates, y: D.vkospi, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VKOSPI', connectgaps: false,
-    line: smoothLine('#A32D2D', 2.4), fillcolor: 'rgba(163,45,45,0.1)'}}
-] , 'VKOSPI 공포지수', {{
-  yaxis: {{title: 'VKOSPI', range: [0, 40]}},
-  shapes: [
-    {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 20, y1: 20, line: {{color: '#BA7517', width: 1, dash: 'dot'}}}},
-    {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 30, y1: 30, line: {{color: '#A32D2D', width: 1, dash: 'dot'}}}}
-  ]
-}});
+safePlot('c_kr_kospi_abs', [
+  {{x: D.dates, y: D.kospi, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#185FA5', width: 2.3}}}},
+  {{x: D.dates, y: D.kospi_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {{color: '#A32D2D', width: 1.4, dash: 'dash'}}}}
+], '코스피 절대 추세', D.kospi_range ? {{yaxis: {{range: D.kospi_range}}}} : undefined);
 
-plot('c_kr_credit', [
-  {{x: D.dates, y: D.kospi, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: smoothLine('#185FA5', 2.4)}},
-  {{x: D.dates, y: D.credit, type: 'scatter', mode: 'lines', name: '신용잔고(억)', yaxis: 'y2', connectgaps: true, line: {{color: '#993C1D', width: 2, dash: 'dash'}}}}
+safePlot('c_kr_kosdaq_abs', [
+  {{x: D.dates, y: D.kosdaq, type: 'scatter', mode: 'lines', name: '코스닥', connectgaps: true, line: {{color: '#534AB7', width: 2.3}}}},
+  {{x: D.dates, y: D.kosdaq_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {{color: '#A32D2D', width: 1.4, dash: 'dash'}}}}
+], '코스닥 절대 추세', D.kosdaq_range ? {{yaxis: {{range: D.kosdaq_range}}}} : undefined);
+
+safePlot('c_kr_credit', [
+  {{x: D.dates, y: D.kospi, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#185FA5', width: 2.2}}}},
+  {{x: D.dates, y: D.credit, type: 'scatter', mode: 'lines', name: '신용잔고(억)', yaxis: 'y2', connectgaps: false, line: {{color: '#993C1D', width: 2, dash: 'dash'}}}}
 ], '코스피 vs 신용잔고', {{yaxis: {{title: '코스피'}}, yaxis2: {{title: '잔고(억)', overlaying: 'y', side: 'right'}}}});
 
-plot('c_kr_forced', [{{
-  x: D.dates, y: D.forced, type: 'bar', name: '반대매매(억)',
-  marker: {{color: D.forced.map(v => v >= 600 ? '#A32D2D' : v >= 400 ? '#D85A30' : v >= 200 ? '#BA7517' : '#888')}}
-}}], '일일 반대매매');
+safePlot('c_kr_forced', [{{x: D.dates, y: D.forced, type: 'bar', name: '반대매매(억)', marker: {{color: (D.forced || []).map(v => v >= 600 ? '#A32D2D' : v >= 400 ? '#D85A30' : v >= 200 ? '#BA7517' : '#888')}}}}], '일일 반대매매');
 
-plot('c_kr_foreign', [{{
-  x: D.dates, y: D.foreign, type: 'bar', name: '외국인(억)',
-  marker: {{color: D.foreign.map(v => v == null ? '#d9d9d9' : (v < 0 ? '#A32D2D' : '#1D9E75'))}}
-}}], '외국인 일별 순매수/매도 (코스피+코스닥)', {{yaxis: {{title: '억원'}}}});
+safePlot('c_kr_foreign', [{{x: D.dates, y: D.foreign, type: 'bar', name: '외국인(억)', marker: {{color: (D.foreign || []).map(v => (v ?? 0) < 0 ? '#A32D2D' : '#1D9E75')}}}}], '외국인 일별 순매수/매도 (코스피+코스닥)');
 
-plot('c_kr_semi', [
+safePlot('c_kr_semi', [
   {{x: D.dates, y: D.kospi_base100, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#888', width: 1.2, dash: 'dot'}}}},
-  {{x: D.dates, y: D.samsung_base100, type: 'scatter', mode: 'lines', name: '삼성전자', connectgaps: true, line: smoothLine('#185FA5', 2.6)}},
-  {{x: D.dates, y: D.hynix_base100, type: 'scatter', mode: 'lines', name: 'SK하이닉스', connectgaps: true, line: smoothLine('#534AB7', 2.6)}}
+  {{x: D.dates, y: D.samsung_base100, type: 'scatter', mode: 'lines', name: '삼성전자', connectgaps: true, line: {{color: '#185FA5', width: 2.2}}}},
+  {{x: D.dates, y: D.hynix_base100, type: 'scatter', mode: 'lines', name: 'SK하이닉스', connectgaps: true, line: {{color: '#534AB7', width: 2.2}}}}
 ], '반도체 누적 추세 (Base 100)', {{yaxis: {{title: 'Base 100'}}}});
 
-plot('c_kr_sector', [
-  {{x: D.dates, y: D.sec_반도체, type: 'scatter', mode: 'lines', name: '반도체', connectgaps: true, line: smoothLine('#185FA5', 3.0)}},
-  {{x: D.dates, y: D.sec_자동차, type: 'scatter', mode: 'lines', name: '자동차', connectgaps: true, line: smoothLine('#534AB7', 2.4)}},
-  {{x: D.dates, y: D.sec_조선방산, type: 'scatter', mode: 'lines', name: '조선방산', connectgaps: true, line: smoothLine('#BA7517', 2.4)}},
-  {{x: D.dates, y: D.sec_금융, type: 'scatter', mode: 'lines', name: '금융', connectgaps: true, line: smoothLine('#888', 2.2)}},
-  {{x: D.dates, y: D.sec_2차전지, type: 'scatter', mode: 'lines', name: '2차전지', connectgaps: true, line: smoothLine('#D85A30', 2.2)}},
-  {{x: D.dates, y: D.sec_인터넷, type: 'scatter', mode: 'lines', name: '인터넷', connectgaps: true, line: smoothLine('#1D9E75', 2.2)}},
-  {{x: D.dates, y: D.sec_바이오, type: 'scatter', mode: 'lines', name: '바이오', connectgaps: true, line: smoothLine('#C06C84', 2.0)}}
-] , '업종 바구니 누적 추세 (Base 100)', {{yaxis: {{title: 'Base 100', range: [80, null]}}}});
+safePlot('c_kr_sector', [
+  {{x: D.dates, y: D.sec_반도체, type: 'scatter', mode: 'lines', name: '반도체', connectgaps: false, line: {{color: '#185FA5', width: 2.2}}}},
+  {{x: D.dates, y: D.sec_자동차, type: 'scatter', mode: 'lines', name: '자동차', connectgaps: false, line: {{color: '#7D56F4', width: 2.0}}}},
+  {{x: D.dates, y: D.sec_조선방산, type: 'scatter', mode: 'lines', name: '조선방산', connectgaps: false, line: {{color: '#534AB7', width: 2.0}}}},
+  {{x: D.dates, y: D.sec_금융, type: 'scatter', mode: 'lines', name: '금융', connectgaps: false, line: {{color: '#888', width: 1.8}}}},
+  {{x: D.dates, y: D.sec_2차전지, type: 'scatter', mode: 'lines', name: '2차전지', connectgaps: false, line: {{color: '#BA7517', width: 1.8}}}},
+  {{x: D.dates, y: D.sec_인터넷, type: 'scatter', mode: 'lines', name: '인터넷', connectgaps: false, line: {{color: '#1D9E75', width: 1.8}}}},
+  {{x: D.dates, y: D.sec_바이오, type: 'scatter', mode: 'lines', name: '바이오', connectgaps: false, line: {{color: '#2AA198', width: 1.8}}}}
+], '업종 바구니 누적 추세 (Base 100)', {{yaxis: {{title: 'Base 100'}}}});
 
-plot('c_us_sp', [
-  {{x: D.dates, y: D.sp500, type: 'scatter', mode: 'lines', name: 'S&P 500', connectgaps: true, line: smoothLine('#185FA5', 2.6)}},
-  {{x: D.dates, y: D.sp500_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {{color: '#A32D2D', width: 1.5, dash: 'dash'}}}}
+safePlot('c_us_sp', [
+  {{x: D.dates, y: D.sp500, type: 'scatter', mode: 'lines', name: 'S&P 500', connectgaps: true, line: {{color: '#185FA5', width: 2.3}}}},
+  {{x: D.dates, y: D.sp500_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {{color: '#A32D2D', width: 1.4, dash: 'dash'}}}}
 ], 'S&P 500 + 200일선', D.sp500_range ? {{yaxis: {{range: D.sp500_range}}}} : undefined);
 
-plot('c_us_nasdaq', [
-  {{x: D.dates, y: D.nasdaq, type: 'scatter', mode: 'lines', name: '나스닥', connectgaps: true, line: smoothLine('#534AB7', 2.6)}},
-  {{x: D.dates, y: D.nasdaq_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {{color: '#A32D2D', width: 1.5, dash: 'dash'}}}}
+safePlot('c_us_nasdaq', [
+  {{x: D.dates, y: D.nasdaq, type: 'scatter', mode: 'lines', name: '나스닥', connectgaps: true, line: {{color: '#534AB7', width: 2.3}}}},
+  {{x: D.dates, y: D.nasdaq_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {{color: '#A32D2D', width: 1.4, dash: 'dash'}}}}
 ], '나스닥 + 200일선', D.nasdaq_range ? {{yaxis: {{range: D.nasdaq_range}}}} : undefined);
 
-plot('c_us_vix', [
-  {{x: D.dates, y: D.vix, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VIX', connectgaps: true,
-    line: smoothLine('#A32D2D', 2.2), fillcolor: 'rgba(163,45,45,0.1)'}}
-], 'VIX 공포지수');
+safePlot('c_us_vix', [{{x: D.dates, y: D.vix, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VIX', connectgaps: false, line: {{color: '#A32D2D', width: 2.2}}, fillcolor: 'rgba(163,45,45,0.10)'}}], 'VIX 공포지수');
 
-plot('c_us_nvda', [
-  {{x: D.dates, y: D.nvda, type: 'scatter', mode: 'lines', name: 'NVDA', connectgaps: true, line: smoothLine('#1D9E75', 2.4)}}
-], '엔비디아');
+safePlot('c_us_nvda', [{{x: D.dates, y: D.nvda, type: 'scatter', mode: 'lines', name: 'NVDA', connectgaps: false, line: {{color: '#1D9E75', width: 2.2}}}}], '엔비디아');
 
-plot('c_us_rate', [
-  {{x: D.dates, y: D.ust10y, type: 'scatter', mode: 'lines', name: '10Y', connectgaps: true, line: smoothLine('#BA7517', 2.4)}}
-], '미국 10년물 국채금리 (%)');
+safePlot('c_us_rate', [{{x: D.dates, y: D.ust10y, type: 'scatter', mode: 'lines', name: '10Y', connectgaps: false, line: {{color: '#BA7517', width: 2.2}}}}], '미국 10년물 국채금리 (%)');
 
-plot('c_us_cor1m', [
-  {{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'COR1M', connectgaps: false,
-    line: smoothLine('#534AB7', 3), fillcolor: 'rgba(83,74,183,0.08)'}}
-], 'CBOE 1개월 내재상관 (COR1M) — 낮을수록 쏠림, 높을수록 시스템 공포', {{
-  yaxis: {{title: 'COR1M', range: [0, 100]}},
-  shapes: [
-    {{type: 'rect', xref: 'paper', x0: 0, x1: 1, y0: 60, y1: 100,
-      fillcolor: 'rgba(163,45,45,0.08)', line: {{width: 0}}}},
-    {{type: 'rect', xref: 'paper', x0: 0, x1: 1, y0: 0, y1: 15,
-      fillcolor: 'rgba(186,117,23,0.10)', line: {{width: 0}}}},
-    {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 60, y1: 60,
-      line: {{color: '#A32D2D', width: 1, dash: 'dot'}}}},
-    {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 20, y1: 20,
-      line: {{color: '#1D9E75', width: 1, dash: 'dot'}}}},
-    {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 15, y1: 15,
-      line: {{color: '#BA7517', width: 1, dash: 'dot'}}}}
-  ],
-  annotations: [
-    {{xref: 'paper', yref: 'y', x: 0.02, y: 62, text: '시스템 공포 (60+)', showarrow: false,
-      font: {{size: 10, color: '#A32D2D'}}, xanchor: 'left'}},
-    {{xref: 'paper', yref: 'y', x: 0.02, y: 12, text: '쏠림 극한 (&lt;15)', showarrow: false,
-      font: {{size: 10, color: '#BA7517'}}, xanchor: 'left'}}
-  ]
-}});
-
-document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', e => {{
-  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
-  document.querySelectorAll('.pane').forEach(x => x.classList.remove('active'));
-  e.target.classList.add('active');
-  document.getElementById('pane-' + e.target.dataset.tab).classList.add('active');
-  setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
-}}));
+safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'COR1M', connectgaps: false, line: {{color: '#534AB7', width: 2.2}}, fillcolor: 'rgba(83,74,183,0.08)'}}], 'CBOE 1개월 내재상관 (COR1M)', {{yaxis: {{title: 'COR1M', range: [0, 100]}}, shapes: [
+  {{type: 'rect', xref: 'paper', x0: 0, x1: 1, y0: 60, y1: 100, fillcolor: 'rgba(163,45,45,0.08)', line: {{width: 0}}}},
+  {{type: 'rect', xref: 'paper', x0: 0, x1: 1, y0: 0, y1: 15, fillcolor: 'rgba(186,117,23,0.10)', line: {{width: 0}}}},
+  {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 60, y1: 60, line: {{color: '#A32D2D', width: 1, dash: 'dot'}}}},
+  {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 20, y1: 20, line: {{color: '#1D9E75', width: 1, dash: 'dot'}}}},
+  {{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 15, y1: 15, line: {{color: '#BA7517', width: 1, dash: 'dot'}}}}
+]}});
 </script>
 </body>
 </html>
 """
     (DOCS_DIR / "index.html").write_text(html, encoding="utf-8")
-    print(f"  dashboard written")
+    print("  dashboard written")
 
 
 def main():
