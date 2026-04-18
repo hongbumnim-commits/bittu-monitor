@@ -825,130 +825,87 @@ def fetch_us_margin_debt():
         dict {date(월말): debt_bil_usd}
     """
     from io import BytesIO
-
-    def _parse_finra_date(val):
-        if pd.isna(val):
-            return None
-        if isinstance(val, (pd.Timestamp, dt.datetime, dt.date)):
-            return val.date() if hasattr(val, 'date') else val
-        s = str(val).strip()
-        for fmt in ["%b-%y", "%B-%y", "%b %Y", "%B %Y", "%Y-%m", "%Y/%m", "%m/%Y", "%Y%m", "%b-%Y"]:
-            try:
-                return dt.datetime.strptime(s, fmt).date()
-            except ValueError:
-                continue
-        m = re.search(r'(20\d{2})[-/]?(\d{1,2})', s)
-        if m:
-            try:
-                return dt.date(int(m.group(1)), int(m.group(2)), 1)
-            except Exception:
-                return None
-        return None
-
-    def _clean_num(v):
-        try:
-            s = str(v).replace(',', '').replace('$', '').strip()
-            if s in ('', 'nan', 'None'):
-                return None
-            return float(s)
-        except Exception:
-            return None
-
-    def _parse_sheet(df_raw):
-        if df_raw is None or df_raw.empty:
-            return {}
-        # 헤더 행 탐지
-        for header_row in range(min(40, len(df_raw))):
-            row_txt = ' '.join([str(v) for v in df_raw.iloc[header_row].values if pd.notna(v)]).lower()
-            if not row_txt:
-                continue
-            if ('year' in row_txt and 'month' in row_txt) or ('debit' in row_txt and 'margin' in row_txt):
-                cols = [str(c).strip() if pd.notna(c) else f'col_{i}' for i, c in enumerate(df_raw.iloc[header_row].tolist())]
-                df = df_raw.iloc[header_row + 1:].copy()
-                df.columns = cols
-                df = df.reset_index(drop=True)
-                date_col = None
-                debit_col = None
-                for c in df.columns:
-                    cl = str(c).lower()
-                    if date_col is None and ('year' in cl or 'month' in cl or 'date' in cl):
-                        date_col = c
-                    if debit_col is None and 'debit' in cl and 'margin' in cl:
-                        debit_col = c
-                if date_col is None and len(df.columns) >= 1:
-                    date_col = df.columns[0]
-                if debit_col is None:
-                    for c in df.columns[1:]:
-                        if any(k in str(c).lower() for k in ['debit', 'margin']):
-                            debit_col = c
-                            break
-                if date_col and debit_col:
-                    out = {}
-                    for _, row in df.iterrows():
-                        d = _parse_finra_date(row.get(date_col))
-                        v = _clean_num(row.get(debit_col))
-                        if d and v and v > 10000:
-                            out[d] = round(v / 1000, 1)
-                    if len(out) >= 6:
-                        return out
-        # 열 추론 fallback
-        out = {}
-        first_col = df_raw.columns[0]
-        for c in df_raw.columns[1:]:
-            vals = [_clean_num(v) for v in df_raw[c].tolist()]
-            valid = [v for v in vals if v is not None]
-            if len(valid) < 6 or max(valid) < 10000:
-                continue
-            temp = {}
-            for i in range(len(df_raw)):
-                d = _parse_finra_date(df_raw.iloc[i][first_col])
-                v = _clean_num(df_raw.iloc[i][c])
-                if d and v and v > 10000:
-                    temp[d] = round(v / 1000, 1)
-            if len(temp) > len(out):
-                out = temp
-        return out
-
     for url in FINRA_MARGIN_URLS:
         try:
             r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
             if r.status_code != 200:
                 continue
-            xl = pd.read_excel(BytesIO(r.content), sheet_name=None, engine='openpyxl', header=None)
-            for sheet_name, df_raw in xl.items():
-                result = _parse_sheet(df_raw)
-                if result:
-                    cutoff = TODAY - dt.timedelta(days=36 * 31)
-                    result = {d: v for d, v in result.items() if d >= cutoff}
-                    if result:
-                        latest = max(result)
-                        print(f"  us margin debt (finra:{sheet_name}): {len(result)} months, latest {latest} ${result[latest]:.1f}B")
-                        return dict(sorted(result.items()))
-        except Exception as e:
-            print(f"  [warn] finra {url.split('/')[-1]}: {e}")
-
-    # YCharts fallback
-    try:
-        r = requests.get('https://ycharts.com/indicators/finra_margin_debt', headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
-        if r.status_code == 200:
-            pairs = re.findall(r'"formatted_date":"([A-Za-z]{3} \d{1,2}, \d{4})"[^\}]*?"raw_data":([0-9.]+)', r.text)
+            try:
+                xl = pd.read_excel(BytesIO(r.content), sheet_name=None, engine="openpyxl")
+            except Exception as e:
+                print(f"  [warn] finra xlsx read: {e}")
+                continue
+            if not xl:
+                continue
+            sheet_name = list(xl.keys())[0]
+            df_raw = xl[sheet_name]
+            if df_raw.empty or len(df_raw) < 5:
+                continue
+            # 헤더 행 찾기
+            header_row = None
+            for i in range(min(15, len(df_raw))):
+                row_str = " ".join([str(v) for v in df_raw.iloc[i].values if pd.notna(v)]).lower()
+                if ("debit" in row_str and "margin" in row_str) or ("year-month" in row_str) or ("year/month" in row_str):
+                    header_row = i
+                    break
+            if header_row is None:
+                for i in range(min(15, len(df_raw))):
+                    try:
+                        v = df_raw.iloc[i, 1]
+                        if pd.notna(v) and isinstance(v, (int, float)) and v > 10000:
+                            header_row = i - 1
+                            break
+                    except Exception:
+                        continue
+            if header_row is None:
+                continue
+            new_cols = df_raw.iloc[header_row].tolist()
+            df_data = df_raw.iloc[header_row + 1:].copy()
+            df_data.columns = [str(c).strip() if pd.notna(c) else f"col_{i}" for i, c in enumerate(new_cols)]
+            df_data = df_data.reset_index(drop=True)
+            date_col = df_data.columns[0]
+            debit_col = None
+            for c in df_data.columns:
+                cl = str(c).lower()
+                if "debit" in cl and "margin" in cl:
+                    debit_col = c
+                    break
+            if debit_col is None and len(df_data.columns) >= 2:
+                debit_col = df_data.columns[1]
+            if debit_col is None:
+                continue
             result = {}
-            for ds, vs in pairs:
-                try:
-                    d = dt.datetime.strptime(ds, '%b %d, %Y').date().replace(day=1)
-                    result[d] = round(float(vs) / 1000, 1)
-                except Exception:
+            for _, row in df_data.iterrows():
+                date_val = row[date_col]
+                debit_val = row[debit_col]
+                if pd.isna(date_val) or pd.isna(debit_val):
                     continue
+                parsed_date = None
+                if isinstance(date_val, (pd.Timestamp, dt.datetime, dt.date)):
+                    parsed_date = date_val.date() if hasattr(date_val, "date") else date_val
+                else:
+                    date_str = str(date_val).strip()
+                    for fmt in ["%b-%y", "%B-%y", "%b %Y", "%B %Y", "%Y-%m", "%Y/%m", "%m/%Y"]:
+                        try:
+                            parsed_date = dt.datetime.strptime(date_str, fmt).date()
+                            break
+                        except ValueError:
+                            continue
+                if parsed_date is None:
+                    continue
+                try:
+                    debit_num = float(str(debit_val).replace(",", ""))
+                except (ValueError, TypeError):
+                    continue
+                # 백만 USD → 십억 USD
+                result[parsed_date] = round(debit_num / 1000, 1)
             if result:
                 cutoff = TODAY - dt.timedelta(days=36 * 31)
                 result = {d: v for d, v in result.items() if d >= cutoff}
-                if result:
-                    latest = max(result)
-                    print(f"  us margin debt (ycharts): {len(result)} months, latest {latest} ${result[latest]:.1f}B")
-                    return dict(sorted(result.items()))
-    except Exception as e:
-        print(f"  [warn] ycharts margin debt: {e}")
-
+                print(f"  us margin debt (finra): {len(result)} months, latest ${max(result.values()):.1f}B")
+                return result
+        except Exception as e:
+            print(f"  [warn] finra {url.split('/')[-1]}: {e}")
     print(f"  [warn] us margin debt: all sources failed")
     return {}
 
@@ -1884,7 +1841,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
   <div class="chart"><div id="c_us_rate" style="height:280px;"></div></div>
   <div class="chart"><div id="c_us_cor1m" style="height:300px;"></div></div>
   <div class="chart"><div id="c_us_margin" style="height:320px;"></div></div>
-  <div class="chart"><div id="c_us_m7" style="height:1840px;"></div></div>
+  <div class="chart"><div id="c_us_m7" style="height:1500px;"></div></div>
   <div class="chart"><div id="c_us_gl" style="height:380px;"></div></div>
 </div>
 
@@ -1978,12 +1935,12 @@ safePlot('c_kr_sector', [
 safePlot('c_us_sp', [
   {{x: D.dates, y: D.sp500, type: 'scatter', mode: 'lines', name: 'S&P 500', connectgaps: true, line: {{color: '#185FA5', width: 2.3}}}},
   {{x: D.dates, y: D.sp500_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {{color: '#A32D2D', width: 1.4, dash: 'dash'}}}}
-], 'S&P 500 + 200일선', D.sp500_range ? {{yaxis: {{range: D.sp500_range}}}} : undefined);
+], 'S&P 500', D.sp500_range ? {{yaxis: {{range: D.sp500_range}}}} : undefined);
 
 safePlot('c_us_nasdaq', [
   {{x: D.dates, y: D.nasdaq, type: 'scatter', mode: 'lines', name: '나스닥', connectgaps: true, line: {{color: '#534AB7', width: 2.3}}}},
   {{x: D.dates, y: D.nasdaq_ma200, type: 'scatter', mode: 'lines', name: '200일선', connectgaps: true, line: {{color: '#A32D2D', width: 1.4, dash: 'dash'}}}}
-], '나스닥 + 200일선', D.nasdaq_range ? {{yaxis: {{range: D.nasdaq_range}}}} : undefined);
+], '나스닥 종합지수 (IXIC)', D.nasdaq_range ? {{yaxis: {{range: D.nasdaq_range}}}} : undefined);
 
 safePlot('c_us_vix', [{{x: D.dates, y: D.vix, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VIX', connectgaps: false, line: {{color: '#A32D2D', width: 2.2}}, fillcolor: 'rgba(163,45,45,0.10)'}}], 'VIX 공포지수');
 
@@ -2045,7 +2002,7 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
     }};
     const labelMap = {{
       'SP500': 'S&P500',
-      'IXIC':  '나스닥 종합지수(IXIC)',
+      'IXIC':  '나스닥',
       'AAPL':  '애플 AAPL',
       'MSFT':  'MS MSFT',
       'GOOGL': '구글 GOOGL',
@@ -2072,29 +2029,62 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
         connectgaps: true,
         line: {{
           color: colorMap[t] || '#666',
-          width: (isSP || isNas) ? 2.2 : 2.0,
+          width: (isSP || isNas) ? 2.0 : 1.9,
           dash: isSP ? 'dot' : (isNas ? 'dash' : 'solid')
         }}
       }});
     }});
     if (traces.length === 0) {{ showEmpty(id); return; }}
-    const ranking = traces
-      .map(t => ({{name: t.name, last: [...t.y].reverse().find(v => v !== null && v !== undefined)}}))
-      .filter(x => x.last !== undefined)
-      .sort((a,b) => b.last - a.last);
-    const rankText = ranking.map((x,i) => `${{i+1}}위 ${{x.name}} ${{x.last.toFixed(1)}}`).join('<br>');
+
+    const ranking = [];
+    order.forEach(t => {{
+      const vals = D.m7_series[t];
+      if (!vals || !hasValues(vals)) return;
+      let latest = null;
+      for (let i = vals.length - 1; i >= 0; i--) {{
+        if (vals[i] !== null && vals[i] !== undefined) {{
+          latest = vals[i];
+          break;
+        }}
+      }}
+      if (latest !== null) ranking.push([t, latest]);
+    }});
+    ranking.sort((a, b) => b[1] - a[1]);
+
+    const rankLabelMap = {{
+      'SP500': 'S&P500',
+      'IXIC': '나스닥(IXIC)',
+      'AAPL': '애플',
+      'MSFT': 'MS',
+      'GOOGL': '구글',
+      'AMZN': '아마존',
+      'META': '메타',
+      'NVDA': '엔비디아',
+      'TSLA': '테슬라',
+      'AVGO': '브로드컴',
+      'TSM': 'TSMC'
+    }};
+
+    const rankingText = ranking.map((row, idx) => `${{idx + 1}}위 ${{rankLabelMap[row[0]] || row[0]}}  ${{row[1].toFixed(1)}}`).join('<br>');
+
     Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
-      title: {{text: 'M7 + 브로드컴 + TSMC + 나스닥 종합지수(IXIC) vs S&P500 누적 추세 (Base 100)', font: {{size: 14}}}},
+      title: {{text: 'M7 + 브로드컴 + TSMC + 나스닥 vs S&P500 누적 추세 (Base 100)', font: {{size: 14}}}},
       yaxis: {{title: 'Base 100'}},
-      legend: {{orientation: 'h', y: -0.08, x: 0, xanchor: 'left'}},
-      margin: {{t: 70, r: 50, b: 100, l: 55}},
-      annotations: [{{
-        xref: 'paper', yref: 'paper', x: 0.01, y: 0.99,
-        xanchor: 'left', yanchor: 'top', align: 'left', showarrow: false,
-        text: rankText,
-        bgcolor: 'rgba(255,255,255,0.85)', bordercolor: '#ddd', borderwidth: 1,
-        font: {{size: 12, color: '#333'}}
-      }}]
+      legend: {{orientation: 'h', y: -0.10, x: 0, xanchor: 'left'}},
+      margin: {{t: 30, r: 50, b: 90, l: 55}},
+      annotations: ranking.length ? [{{
+        xref: 'paper', yref: 'paper',
+        x: 0.02, y: 0.98,
+        xanchor: 'left', yanchor: 'top',
+        align: 'left',
+        showarrow: false,
+        text: rankingText,
+        font: {{size: 13, color: '#444'}},
+        bgcolor: 'rgba(255,255,255,0.82)',
+        bordercolor: 'rgba(0,0,0,0.10)',
+        borderwidth: 1,
+        borderpad: 6
+      }}] : []
     }}), {{displayModeBar: false, responsive: true}});
   }} catch (e) {{ console.error('m7 plot:', e); showEmpty(id); }}
 }})();
