@@ -1237,7 +1237,11 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     kr_power_dates  = []
     kr_power_series = {}
     if kr_power_basket:
-        anchor = kr_power_basket.get("KS11") or next((s for s in kr_power_basket.values() if not s.empty), None)
+        _ks11 = kr_power_basket.get("KS11")
+        if isinstance(_ks11, pd.Series) and not _ks11.empty:
+            anchor = _ks11
+        else:
+            anchor = next((s for s in kr_power_basket.values() if isinstance(s, pd.Series) and not s.empty), None)
         if anchor is not None:
             cutoff = TODAY - dt.timedelta(days=LOOKBACK_DAYS)
             anchor = anchor[anchor.index >= cutoff]
