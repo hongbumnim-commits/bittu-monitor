@@ -12,8 +12,8 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 import requests
-from bs4 import BeautifulSoup
 import FinanceDataReader as fdr
+from io import StringIO
 
 ROOT = Path(__file__).parent
 DATA_DIR = ROOT / "data"
@@ -34,62 +34,20 @@ SECTOR_BASKETS = {
 }
 
 
-GLOBAL_LIQUIDITY_SERIES = {
-    "WALCL": "fed_assets",
-    "ECBASSETSW": "ecb_assets",
-    "JPNASSETS": "boj_assets",
+# 전력주 바스켓 (누적 추세용)
+KR_POWER_STOCKS = {
+    "KS11":   "코스피",
+    "KQ11":   "코스닥",
+    "062040": "산일전기",
+    "010120": "LS일렉트릭",
+    "298040": "효성중공업",
+    "267260": "HD현대일렉트릭",
 }
 
 # 공공데이터포털 서비스키 (data.go.kr) - GitHub Secret: DATA_GO_KR_API_KEY
 DATA_GO_KR_KEY = os.environ.get("DATA_GO_KR_API_KEY", "")
 KOFIA_BASE = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService"
 MARKET_INDEX_BASE = "https://apis.data.go.kr/1160100/service/GetMarketIndexInfoService"
-
-def fetch_fred_series(series_id, name=None, days=LOOKBACK_DAYS * 3):
-    start = (TODAY - dt.timedelta(days=days)).strftime("%Y-%m-%d")
-    try:
-        df = fdr.DataReader(f"FRED:{series_id}", start)
-        if df is None or df.empty:
-            return pd.Series(dtype=float, name=name or series_id)
-        col = df.columns[0]
-        s = pd.to_numeric(df[col], errors="coerce").dropna()
-        if s.empty:
-            return pd.Series(dtype=float, name=name or series_id)
-        s.index = pd.to_datetime(s.index).date
-        return s.rename(name or series_id)
-    except Exception as e:
-        print(f"  [warn] fred {series_id}: {e}")
-        return pd.Series(dtype=float, name=name or series_id)
-
-
-def fetch_usdjpy_series(days=LOOKBACK_DAYS * 3):
-    usdjpy = fetch_fred_series("DEXJPUS", "usdjpy", days=days)
-    if not usdjpy.empty:
-        return usdjpy
-    return pd.Series(dtype=float, name="usdjpy")
-
-
-def fetch_global_liquidity_proxy():
-    """A안: 주요 중앙은행 자산 합계(정규화 proxy) + USDJPY(Stooq 우선)."""
-    series = {}
-    for sid, nm in GLOBAL_LIQUIDITY_SERIES.items():
-        s = fetch_fred_series(sid, nm)
-        if not s.empty:
-            series[nm] = s
-    proxy = pd.Series(dtype=float, name="global_liquidity")
-    if series:
-        df = pd.concat(series.values(), axis=1).sort_index().ffill().dropna(how="all")
-        if not df.empty:
-            normalized = []
-            for c in df.columns:
-                col = pd.to_numeric(df[c], errors="coerce").dropna()
-                if col.empty or col.iloc[0] == 0:
-                    continue
-                normalized.append(col / col.iloc[0] * 100)
-            if normalized:
-                proxy = pd.concat(normalized, axis=1).mean(axis=1).rename("global_liquidity")
-    usdjpy = fetch_usdjpy_series(days=LOOKBACK_DAYS * 3)
-    return {"global_liquidity": proxy, "usdjpy": usdjpy}
 
 
 def safe(fn_name, fn, default=None, retries=3, sleep=2):
@@ -269,54 +227,10 @@ def fetch_cor1m():
             except Exception:
                 continue
 
-    # 4) Investing.com 폴백
-    try:
-        s = fetch_investing_history("https://www.investing.com/indices/cboe-1month-implied-correlation-historical-data", "cor1m")
-        if not s.empty:
-            return s
-    except Exception as e:
-        print(f"  [info] investing cor1m: {e}")
-
     print(f"  [warn] cor1m: all sources failed")
     return pd.Series(dtype=float, name="cor1m")
 
 
-def fetch_investing_history(url, name, days=LOOKBACK_DAYS):
-    """Investing.com historical page fallback scraper."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.investing.com/",
-    }
-    try:
-        r = requests.get(url, headers=headers, timeout=20)
-        r.raise_for_status()
-        tables = pd.read_html(r.text)
-        cutoff = TODAY - dt.timedelta(days=days)
-        for t in tables:
-            cols = [str(c) for c in t.columns]
-            flat_cols = " ".join(cols).lower()
-            if "date" not in flat_cols or "price" not in flat_cols:
-                continue
-            date_col = next((c for c in t.columns if str(c).lower().startswith("date")), t.columns[0])
-            price_col = next((c for c in t.columns if "price" in str(c).lower()), None)
-            if price_col is None:
-                continue
-            tmp = t[[date_col, price_col]].copy()
-            tmp.columns = ["date", "price"]
-            tmp["date"] = pd.to_datetime(tmp["date"], errors="coerce")
-            tmp["price"] = pd.to_numeric(tmp["price"].astype(str).str.replace(",", "", regex=False), errors="coerce")
-            tmp = tmp.dropna().sort_values("date")
-            if tmp.empty:
-                continue
-            s = pd.Series(tmp["price"].values, index=tmp["date"].dt.date, name=name)
-            s = s[s.index >= cutoff]
-            if not s.empty:
-                print(f"  {name} via investing: {len(s)} rows, latest {float(s.iloc[-1]):.2f}")
-                return s
-    except Exception as e:
-        print(f"  [warn] investing {name}: {e}")
-    return pd.Series(dtype=float, name=name)
 def fetch_sector_basket(tickers):
     """섹터 종목 바스켓을 Base 100 누적 추세로 반환."""
     closes = []
@@ -343,6 +257,18 @@ def fetch_sector_basket(tickers):
 # ================================================================
 # FINRA Rule 4521에 따라 증권사들이 매월 말일 기준으로 보고
 # 공식 URL: finra.org의 margin-statistics.xlsx (매달 갱신)
+
+def fetch_kr_power_basket():
+    """전력주 개별 종목 누적 추세 — M7 방식 동일."""
+    result = {}
+    for ticker, name in KR_POWER_STOCKS.items():
+        s = safe(f"kr_power_{ticker}", lambda tt=ticker, nm=name: fetch_fdr(tt, nm, days=LOOKBACK_DAYS),
+                 default=pd.Series(dtype=float))
+        if not s.empty:
+            result[ticker] = s.rename(ticker)
+    print(f"  kr_power basket: {len(result)} tickers")
+    return result
+
 
 FINRA_MARGIN_URLS = [
     "https://www.finra.org/sites/default/files/2021-03/margin-statistics.xlsx",
@@ -532,8 +458,6 @@ VKOSPI_KEYWORDS = ["변동성"]
 USDKRW_KEYWORDS = ["미국달러", "달러", "USD"]
 KOSPI_KEYWORDS  = ["코스피"]
 
-ESG_BASE = "https://apis.data.go.kr/1160100/service/GetESGIdxInfoService"
-
 
 def _kofia_index_fetch(keywords, start_dt, end_dt, val_field="clpr"):
     """전체 조회 후 키워드로 지수명 매칭. Returns: ({date:float}, matched_name)"""
@@ -614,66 +538,8 @@ def fetch_kr_market_index():
         if data:
             latest = max(data)
             print(f"  {label} ({matched}): {len(data)}rows, latest {latest}: {data[latest]}")
-        else:
-            print(f"  [warn] {label}: 0 rows")
     return result
 
-
-def fetch_esg_index():
-    """ESG 지수 (KRX ESG Leaders 150 등) 종가 시계열."""
-    if not DATA_GO_KR_KEY:
-        return {}
-    result = {}
-    start_dt = (TODAY - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y%m%d")
-    end_dt   = TODAY.strftime("%Y%m%d")
-    page, per_page = 1, 100
-    target_name = None
-    while True:
-        params = {
-            "serviceKey": DATA_GO_KR_KEY,
-            "pageNo": page, "numOfRows": per_page,
-            "resultType": "json",
-            "beginBasDt": start_dt, "endBasDt": end_dt,
-        }
-        if target_name:
-            params["idxNm"] = target_name
-        try:
-            r = requests.get(f"{ESG_BASE}/getESGIdxInfo", params=params, timeout=20)
-            r.raise_for_status()
-            body  = r.json().get("response", {}).get("body", {})
-            items = body.get("items", {})
-            if not items:
-                break
-            rows = items.get("item", [])
-            if isinstance(rows, dict):
-                rows = [rows]
-            for row in rows:
-                nm = str(row.get("idxNm", ""))
-                if target_name is None:
-                    target_name = nm
-                elif nm != target_name:
-                    continue
-                ds  = str(row.get("basDt", "")).strip()
-                raw = str(row.get("clpr",  "")).replace(",","").strip()
-                if len(ds) == 8 and raw not in ("","nan","-"):
-                    try:
-                        d = dt.date(int(ds[:4]), int(ds[4:6]), int(ds[6:8]))
-                        result[d] = float(raw)
-                    except Exception:
-                        pass
-            total = int(body.get("totalCount", 0))
-            if page * per_page >= total:
-                break
-            page += 1
-        except Exception as e:
-            print(f"  [warn] fetch_esg_index p{page}: {e}")
-            break
-    if result:
-        latest = max(result)
-        print(f"  ESG지수 ({target_name}): {len(result)}rows, latest {latest}: {result[latest]}")
-    else:
-        print("  [warn] ESG지수: 0 rows")
-    return result
 
 
 # data.go.kr 금융투자협회 API - 신용공여잔고추이 (잘 됨)
@@ -738,13 +604,10 @@ def fetch_credit_balance():
     return result
 
 
-def fetch_foreign_holding_kr():
-    return {}
-
 MAIN_COLS = [
     "date",
     "kospi", "kosdaq", "samsung", "hynix",
-    "credit_balance_eok", "vkospi", "usdkrw", "kospi_trprc", "esg_idx",
+    "credit_balance_eok", "vkospi", "usdkrw", "kospi_trprc",
     "samsung_ret_pct", "hynix_ret_pct",
     "sp500", "nasdaq", "vix", "nvda", "ust10y", "cor1m",
     "sec_반도체", "sec_방산조선", "sec_바이오", "sec_2차전지", "sec_금융",
@@ -804,7 +667,6 @@ def update_data():
     # --- 한국 시장 펀더멘털 데이터 ---
     credit_map  = safe("credit",        fetch_credit_balance,   default={})
     kr_idx      = safe("kr_market_idx", fetch_kr_market_index,  default={"vkospi": {}, "usdkrw": {}, "kospi_trprc": {}})
-    esg_map     = safe("esg_idx",       fetch_esg_index,          default={})
 
     series_dict = {
         "kospi": kospi, "kosdaq": kosdaq, "samsung": samsung, "hynix": hynix,
@@ -820,7 +682,6 @@ def update_data():
     df["vkospi"]            = None
     df["usdkrw"]            = None
     df["kospi_trprc"]       = None
-    df["esg_idx"]           = None
 
     # 신용공여잔고
     for d, v in credit_map.items():
@@ -831,9 +692,6 @@ def update_data():
         for d, v in kr_idx.get(src, {}).items():
             if d in df["date"].values:
                 df.loc[df["date"] == d, col] = v
-    for d, v in esg_map.items():
-        if d in df["date"].values:
-            df.loc[df["date"] == d, "esg_idx"] = v
 
     for c in MAIN_COLS:
         if c not in df.columns:
@@ -848,13 +706,12 @@ def update_data():
     # --- 추가 데이터 (월별/별도) ---
     us_margin_debt = safe("us_margin_debt", fetch_us_margin_debt, default={})
     m7_basket = safe("m7_plus", fetch_m7_plus_basket, default={})
-    gl = safe("global_liquidity", fetch_global_liquidity_proxy, default={"global_liquidity": pd.Series(dtype=float), "usdjpy": pd.Series(dtype=float)})
+    kr_power_basket = safe("kr_power", fetch_kr_power_basket, default={})
 
     extras = {
         "us_margin_debt": us_margin_debt,         # {date: bil_usd}  월별
-        "m7_basket": m7_basket,                   # {ticker: Series}
-        "global_liquidity": gl.get("global_liquidity", pd.Series(dtype=float)),
-        "usdjpy": gl.get("usdjpy", pd.Series(dtype=float)),
+        "m7_basket": m7_basket,
+        "kr_power_basket": kr_power_basket,
     }
     return combined, extras
 
@@ -1293,7 +1150,6 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
 
     kospi    = series_connected("kospi",      min_val=1000, max_daily_jump_pct=20)
     vkospi   = series_connected("vkospi",     min_val=3,    max_val=200, max_daily_jump_pct=80)
-    esg_idx  = series_connected("esg_idx",    min_val=1,    max_daily_jump_pct=20)
     usdkrw   = series_connected("usdkrw",     min_val=800,  max_val=2000, max_daily_jump_pct=10)
     kospi_trprc = series_nullable("kospi_trprc")
     kosdaq = series_connected("kosdaq", min_val=300, max_daily_jump_pct=20)
@@ -1315,7 +1171,6 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
         "vkospi": vkospi,
         "usdkrw": usdkrw,
         "kospi_trprc": kospi_trprc,
-        "esg_idx": esg_idx,
         "sp500": sp500,
         "sp500_ma200": ma_series("sp500", 200),
         "nasdaq": nasdaq,
@@ -1325,11 +1180,8 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
         "ust10y": series_connected("ust10y", min_val=0, max_val=10, max_daily_jump_pct=20),
         "cor1m": cor1m,
         "sec_반도체": base100("sec_반도체"),
-        "sec_자동차": base100("sec_자동차"),
-        "sec_조선방산": base100("sec_조선방산"),
         "sec_금융": base100("sec_금융"),
         "sec_2차전지": base100("sec_2차전지"),
-        "sec_인터넷": base100("sec_인터넷"),
         "sec_바이오": base100("sec_바이오"),
         "sp500_range": y_range([sp500, ma_series("sp500", 200)]),
         "nasdaq_range": y_range([nasdaq, ma_series("nasdaq", 200)]),
@@ -1377,34 +1229,27 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     js_data["m7_dates"] = m7_dates
     js_data["m7_series"] = m7_series
 
-    # 2-1. 글로벌 유동성 proxy + 달러-엔
-    gl_proxy = extras.get("global_liquidity", pd.Series(dtype=float))
-    usdjpy = extras.get("usdjpy", pd.Series(dtype=float))
-    gl_dates = []
-    gl_proxy_vals = []
-    usdjpy_vals = []
-    if (isinstance(gl_proxy, pd.Series) and not gl_proxy.empty) or (isinstance(usdjpy, pd.Series) and not usdjpy.empty):
-        anchor = None
-        if isinstance(gl_proxy, pd.Series) and not gl_proxy.empty:
-            anchor = gl_proxy
-        elif isinstance(usdjpy, pd.Series) and not usdjpy.empty:
-            anchor = usdjpy
+
+
+
+    # ★ 전력주 바스켓 (한국탭)
+    kr_power_basket = extras.get("kr_power_basket", {}) or {}
+    kr_power_dates  = []
+    kr_power_series = {}
+    if kr_power_basket:
+        anchor = kr_power_basket.get("KS11") or next((s for s in kr_power_basket.values() if not s.empty), None)
         if anchor is not None:
-            cutoff = TODAY - dt.timedelta(days=LOOKBACK_DAYS * 3)
+            cutoff = TODAY - dt.timedelta(days=LOOKBACK_DAYS)
             anchor = anchor[anchor.index >= cutoff]
-            if not anchor.empty:
-                gl_dates = [d.strftime("%Y-%m-%d") for d in anchor.index]
-                if isinstance(gl_proxy, pd.Series) and not gl_proxy.empty:
-                    gp = gl_proxy[gl_proxy.index >= cutoff].reindex(anchor.index).ffill().bfill()
-                    gl_proxy_vals = [None if pd.isna(v) else round(float(v), 2) for v in gp]
-                if isinstance(usdjpy, pd.Series) and not usdjpy.empty:
-                    uj = usdjpy[usdjpy.index >= cutoff].reindex(anchor.index).ffill().bfill()
-                    usdjpy_vals = [None if pd.isna(v) else round(float(v), 2) for v in uj]
-    js_data["gl_dates"] = gl_dates
-    js_data["global_liquidity"] = gl_proxy_vals
-    js_data["usdjpy"] = usdjpy_vals
-
-
+            kr_power_dates = [d.strftime("%Y-%m-%d") for d in anchor.index]
+            for ticker, s in kr_power_basket.items():
+                s2        = s[s.index >= cutoff].reindex(anchor.index).ffill().bfill()
+                first_val = s2.dropna().iloc[0] if not s2.dropna().empty else None
+                if first_val and first_val > 0:
+                    normed = (s2 / first_val) * 100
+                    kr_power_series[ticker] = [None if pd.isna(v) else round(float(v), 2) for v in normed]
+    js_data["kr_power_dates"]  = kr_power_dates
+    js_data["kr_power_series"] = kr_power_series
 
     last_date = df_plot["date"].iloc[-1].strftime("%Y년 %m월 %d일") if not df_plot.empty else "대기"
     kr_color = COLOR.get(signals["label_kr"], "#888")
@@ -1486,6 +1331,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
   </div>
   <div class="signal-grid">{kr_cards}</div>
   <div class="section-title">차트</div>
+  <div class="chart"><div id="c_kr_power" style="height:900px;"></div></div>
   <div class="chart-grid">
     <div class="chart"><div id="c_kr_rel" style="height:320px;"></div></div>
     </div>
@@ -1499,7 +1345,6 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     <div class="chart"><div id="c_kr_usdkrw" style="height:280px;"></div></div>
   </div>
   <div class="chart"><div id="c_kr_trprc" style="height:260px;"></div></div>
-  <div class="chart"><div id="c_kr_esg" style="height:260px;"></div></div>
   <div class="chart"><div id="c_kr_semi" style="height:280px;"></div></div>
   <div class="chart"><div id="c_kr_sector" style="height:320px;"></div></div>
 </div>
@@ -1525,7 +1370,6 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
   <div class="chart"><div id="c_us_cor1m" style="height:300px;"></div></div>
   <div class="chart"><div id="c_us_margin" style="height:320px;"></div></div>
   <div class="chart"><div id="c_us_m7" style="height:900px;"></div></div>
-  <div class="chart"><div id="c_us_gl" style="height:380px;"></div></div>
 </div>
 
 <div class="footer">데이터: FinanceDataReader, FRED(미국 10Y), 네이버 금융/공공데이터/보조 스크래핑 · 투자 권유 아님</div>
@@ -1567,6 +1411,82 @@ function safePlot(id, traces, title, extra) {{
 }}
 
 bindTabs();
+
+
+// ★ 전력주 누적 추세 (Base 100)
+(function() {{
+  const id = 'c_kr_power';
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (!D.kr_power_dates || D.kr_power_dates.length === 0 ||
+      !D.kr_power_series || Object.keys(D.kr_power_series).length === 0) {{
+    showEmpty(id); return;
+  }}
+  try {{
+    const colorMap = {{
+      'KS11':   '#6B7280',
+      'KQ11':   '#1E3A8A',
+      '062040': '#DC2626',
+      '010120': '#10B981',
+      '298040': '#F59E0B',
+      '267260': '#7C3AED',
+    }};
+    const labelMap = {{
+      'KS11':   '코스피',
+      'KQ11':   '코스닥',
+      '062040': '산일전기',
+      '010120': 'LS일렉트릭',
+      '298040': '효성중공업',
+      '267260': 'HD현대일렉트릭',
+    }};
+    const order = ['KS11', 'KQ11', '062040', '010120', '298040', '267260'];
+    const traces = [];
+    order.forEach(t => {{
+      const vals = D.kr_power_series[t];
+      if (!vals || !hasValues(vals)) return;
+      const isBench = (t === 'KS11' || t === 'KQ11');
+      traces.push({{
+        x: D.kr_power_dates, y: vals,
+        type: 'scatter', mode: 'lines',
+        name: labelMap[t] || t,
+        connectgaps: true,
+        _key: t,
+        line: {{
+          color: colorMap[t] || '#666',
+          width: isBench ? 2.6 : 2.4,
+          dash:  t === 'KS11' ? 'dot' : (t === 'KQ11' ? 'dash' : 'solid'),
+          shape: 'spline', smoothing: 1.0
+        }},
+        hoverlabel: {{font: {{size: 13}}}}
+      }});
+    }});
+    if (traces.length === 0) {{ showEmpty(id); return; }}
+
+    const ranking = traces
+      .map(t => ({{key: t._key, name: t.name, last: [...t.y].reverse().find(v => v !== null && v !== undefined)}}))
+      .filter(x => x.last !== undefined)
+      .sort((a, b) => b.last - a.last);
+
+    const lineHeight = 0.038, boxTop = 0.985, boxLeft = 0.012;
+    const rankAnnotations = ranking.map((x, i) => ({{
+      xref: 'paper', yref: 'paper',
+      x: boxLeft, y: boxTop - (i * lineHeight),
+      xanchor: 'left', yanchor: 'top', align: 'left', showarrow: false,
+      text: '<b>' + (i+1) + '위</b> ' + x.name + '<b> ' + x.last.toFixed(1) + '</b>',
+      font: {{size: 15, color: colorMap[x.key] || '#333', family: 'system-ui'}}
+    }}));
+
+    Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
+      title: {{text: '한국 전력주 + 코스피/코스닥 누적 추세 (Base 100)', font: {{size: 16}}}},
+      yaxis: {{title: {{text: 'Base 100', font: {{size: 13}}}}, gridcolor: '#F3F4F6'}},
+      xaxis: {{gridcolor: '#F3F4F6'}},
+      legend: {{orientation: 'h', y: -0.08, x: 0.5, xanchor: 'center', font: {{size: 12}}}},
+      margin: {{t: 60, r: 40, b: 90, l: 60}},
+      annotations: rankAnnotations,
+      hovermode: 'x unified'
+    }}), {{displayModeBar: false, responsive: true}});
+  }} catch (e) {{ console.error('kr_power plot:', e); showEmpty(id); }}
+}})();
 
 safePlot('c_kr_rel', [
   {{x: D.dates, y: D.kospi_base100, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#185FA5', width: 2.5}}}},
@@ -1625,9 +1545,6 @@ safePlot('c_kr_usdkrw', [
   }} catch(e) {{ console.error('trprc:', e); showEmpty(id); }}
 }})();
 
-safePlot('c_kr_esg', [
-  {{x: D.dates, y: D.esg_idx, type: 'scatter', mode: 'lines', name: 'ESG지수', connectgaps: true, line: {{color: '#1D9E75', width: 2.2}}}}
-], 'KRX ESG 지수', {{yaxis: {{title: '지수'}}}});
 safePlot('c_kr_semi', [
   {{x: D.dates, y: D.kospi_base100, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#888', width: 1.2, dash: 'dot'}}}},
   {{x: D.dates, y: D.samsung_base100, type: 'scatter', mode: 'lines', name: '삼성전자', connectgaps: true, line: {{color: '#185FA5', width: 2.2}}}},
@@ -1636,11 +1553,8 @@ safePlot('c_kr_semi', [
 
 safePlot('c_kr_sector', [
   {{x: D.dates, y: D.sec_반도체, type: 'scatter', mode: 'lines', name: '반도체', connectgaps: false, line: {{color: '#185FA5', width: 2.2}}}},
-  {{x: D.dates, y: D.sec_자동차, type: 'scatter', mode: 'lines', name: '자동차', connectgaps: false, line: {{color: '#7D56F4', width: 2.0}}}},
-  {{x: D.dates, y: D.sec_조선방산, type: 'scatter', mode: 'lines', name: '조선방산', connectgaps: false, line: {{color: '#534AB7', width: 2.0}}}},
   {{x: D.dates, y: D.sec_금융, type: 'scatter', mode: 'lines', name: '금융', connectgaps: false, line: {{color: '#888', width: 1.8}}}},
   {{x: D.dates, y: D.sec_2차전지, type: 'scatter', mode: 'lines', name: '2차전지', connectgaps: false, line: {{color: '#BA7517', width: 1.8}}}},
-  {{x: D.dates, y: D.sec_인터넷, type: 'scatter', mode: 'lines', name: '인터넷', connectgaps: false, line: {{color: '#1D9E75', width: 1.8}}}},
   {{x: D.dates, y: D.sec_바이오, type: 'scatter', mode: 'lines', name: '바이오', connectgaps: false, line: {{color: '#2AA198', width: 1.8}}}}
 ], '업종 바구니 누적 추세 (Base 100)', {{yaxis: {{title: 'Base 100'}}}});
 
@@ -1791,25 +1705,6 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
   }} catch (e) {{ console.error('m7 plot:', e); showEmpty(id); }}
 }})();
 
-// === 글로벌 유동성 Proxy vs 달러-엔 ===
-(function() {{
-  const id = 'c_us_gl';
-  const el = document.getElementById(id);
-  if (!el) return;
-  const hasGL = D.gl_dates && D.gl_dates.length > 0 && hasValues(D.global_liquidity);
-  const hasUJ = D.gl_dates && D.gl_dates.length > 0 && hasValues(D.usdjpy);
-  if (!hasGL && !hasUJ) {{ showEmpty(id); return; }}
-  try {{
-    const traces = [];
-    if (hasGL) traces.push({{x:D.gl_dates,y:D.global_liquidity,type:'scatter',mode:'lines',name:'글로벌 유동성 proxy',connectgaps:true,line:{{color:'#185FA5',width:2.8}}}});
-    if (hasUJ) traces.push({{x:D.gl_dates,y:D.usdjpy,type:'scatter',mode:'lines',name:'달러-엔',yaxis:'y2',connectgaps:true,line:{{color:'#9ca3af',width:2.1}}}});
-    Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
-      title:{{text:'글로벌 유동성 Proxy vs 달러-엔', font:{{size:14}}}},
-      yaxis:{{title:'Proxy (Base 100)'}},
-      yaxis2:{{title:'엔', overlaying:'y', side:'right'}}
-    }}), {{displayModeBar:false, responsive:true}});
-  }} catch (e) {{ console.error('gl plot:', e); showEmpty(id); }}
-}})();
 
 
 </script>
@@ -1827,7 +1722,7 @@ def main():
         print(f"[error] update_data fatal: {e}")
         import traceback; traceback.print_exc()
         df = load_history()
-        extras = {"us_margin_debt": {}, "m7_basket": {}, "global_liquidity": pd.Series(dtype=float), "usdjpy": pd.Series(dtype=float)}
+        extras = {"us_margin_debt": {}, "m7_basket": {}, "kr_power_basket": {}}
 
     signals = compute_signals(df, extras)
     regime_kr = compute_regime(df["kospi"]) if not df.empty else {}
