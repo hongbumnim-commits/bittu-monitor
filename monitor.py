@@ -489,6 +489,31 @@ def fetch_us_margin_debt():
 # M7 + AVGO + TSM 바스켓 (개별 종목 누적 추세)
 # ================================================================
 
+KR_POWER_STOCKS = {
+    "KOSPI": ("KS11", "코스피"),
+    "KOSDAQ": ("KQ11", "코스닥"),
+    "LS_ELECTRIC": ("010120", "LS ELECTRIC"),
+    "HD_HE": ("267260", "HD현대일렉트릭"),
+    "HYOSUNG_HI": ("298040", "효성중공업"),
+    "SANIL": ("062040", "산일전기"),
+}
+
+
+def fetch_kr_power_basket():
+    """코스피/코스닥 + 국내 전력기기 대표주 1년 누적 추세용 바스켓."""
+    result = {}
+    for ticker, (source_symbol, _) in KR_POWER_STOCKS.items():
+        s = safe(
+            f"kr_power_{ticker}",
+            lambda ts=source_symbol, nm=ticker: fetch_fdr(ts, nm, days=LOOKBACK_DAYS),
+            default=pd.Series(dtype=float),
+        )
+        if not s.empty:
+            result[ticker] = s.rename(ticker)
+    print(f"  kr power basket: {len(result)} tickers")
+    return result
+
+
 M7_PLUS_STOCKS = {
     "SP500": "S&P500",
     "IXIC": "나스닥",
@@ -681,11 +706,13 @@ def update_data():
 
     # --- 추가 데이터 (월별/별도) ---
     us_margin_debt = safe("us_margin_debt", fetch_us_margin_debt, default={})
+    kr_power_basket = safe("kr_power_basket", fetch_kr_power_basket, default={})
     m7_basket = safe("m7_plus", fetch_m7_plus_basket, default={})
     gl = safe("global_liquidity", fetch_global_liquidity_proxy, default={"global_liquidity": pd.Series(dtype=float), "usdjpy": pd.Series(dtype=float)})
 
     extras = {
         "us_margin_debt": us_margin_debt,         # {date: bil_usd}  월별
+        "kr_power_basket": kr_power_basket,       # {ticker: Series}
         "m7_basket": m7_basket,                   # {ticker: Series}
         "global_liquidity": gl.get("global_liquidity", pd.Series(dtype=float)),
         "usdjpy": gl.get("usdjpy", pd.Series(dtype=float)),
@@ -1130,7 +1157,34 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
         js_data["margin_dates"] = []
         js_data["margin_vals"] = []
 
-    # 2. M7 + AVGO + TSM Base 100 + S&P500
+    # 2. 한국 전력기기 대표주 Base 100 + 코스피/코스닥 (최근 1년)
+    kr_power_basket = extras.get("kr_power_basket", {}) or {}
+    kr_power_dates = []
+    kr_power_series = {}
+    if kr_power_basket:
+        anchor = None
+        if "KOSPI" in kr_power_basket and not kr_power_basket["KOSPI"].empty:
+            anchor = kr_power_basket["KOSPI"]
+        else:
+            for _, s in kr_power_basket.items():
+                if not s.empty:
+                    anchor = s
+                    break
+        if anchor is not None:
+            cutoff = TODAY - dt.timedelta(days=365)
+            anchor = anchor[anchor.index >= cutoff]
+            kr_power_dates = [d.strftime("%Y-%m-%d") for d in anchor.index]
+            for ticker, s in kr_power_basket.items():
+                s2 = s[s.index >= cutoff]
+                s2_reidx = s2.reindex(anchor.index).ffill().bfill()
+                first_val = s2_reidx.dropna().iloc[0] if not s2_reidx.dropna().empty else None
+                if first_val and first_val > 0:
+                    normed = (s2_reidx / first_val) * 100
+                    kr_power_series[ticker] = [None if pd.isna(v) else round(float(v), 2) for v in normed]
+    js_data["kr_power_dates"] = kr_power_dates
+    js_data["kr_power_series"] = kr_power_series
+
+    # 3. M7 + AVGO + TSM Base 100 + S&P500
     m7_basket = extras.get("m7_basket", {}) or {}
     m7_dates = []
     m7_series = {}  # {ticker: [values]}
@@ -1159,7 +1213,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     js_data["m7_dates"] = m7_dates
     js_data["m7_series"] = m7_series
 
-    # 2-1. 글로벌 유동성 proxy + 달러-엔
+    # 3-1. 글로벌 유동성 proxy + 달러-엔
     gl_proxy = extras.get("global_liquidity", pd.Series(dtype=float))
     usdjpy = extras.get("usdjpy", pd.Series(dtype=float))
     gl_dates = []
@@ -1276,8 +1330,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     <div class="chart"><div id="c_kr_kosdaq_abs" style="height:280px;"></div></div>
   </div>
   <div class="chart"><div id="c_kr_credit" style="height:300px;"></div></div>
-  <div class="chart"><div id="c_kr_trprc" style="height:260px;"></div></div>
-  <div class="chart"><div id="c_kr_esg" style="height:260px;"></div></div>
+  <div class="chart"><div id="c_kr_power" style="height:680px;"></div></div>
   <div class="chart"><div id="c_kr_semi" style="height:280px;"></div></div>
   <div class="chart"><div id="c_kr_sector" style="height:320px;"></div></div>
 </div>
@@ -1366,6 +1419,95 @@ safePlot('c_kr_credit', [
   {{x: D.dates, y: D.kospi, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#185FA5', width: 2.2}}}},
   {{x: D.dates, y: D.credit, type: 'scatter', mode: 'lines', name: '신용잔고(억)', yaxis: 'y2', connectgaps: false, line: {{color: '#993C1D', width: 2, dash: 'dash'}}}}
 ], '코스피 vs 신용잔고', {{yaxis: {{title: '코스피'}}, yaxis2: {{title: '잔고(억)', overlaying: 'y', side: 'right'}}}});
+
+// === 코스피 + 코스닥 + 전력기기 대표주 누적 추세 (Base 100, 최근 1년) ===
+(function() {{
+  const id = 'c_kr_power';
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (!D.kr_power_dates || D.kr_power_dates.length === 0 || !D.kr_power_series || Object.keys(D.kr_power_series).length === 0) {{
+    showEmpty(id);
+    return;
+  }}
+  try {{
+    const colorMap = {{
+      'KOSPI': '#6B7280',
+      'KOSDAQ': '#1E3A8A',
+      'LS_ELECTRIC': '#111827',
+      'HD_HE': '#0EA5E9',
+      'HYOSUNG_HI': '#DC2626',
+      'SANIL': '#10B981'
+    }};
+    const labelMap = {{
+      'KOSPI': '코스피',
+      'KOSDAQ': '코스닥',
+      'LS_ELECTRIC': 'LS ELECTRIC',
+      'HD_HE': 'HD현대일렉트릭',
+      'HYOSUNG_HI': '효성중공업',
+      'SANIL': '산일전기'
+    }};
+    const order = ['KOSPI', 'KOSDAQ', 'LS_ELECTRIC', 'HD_HE', 'HYOSUNG_HI', 'SANIL'];
+    const traces = [];
+    order.forEach(t => {{
+      const vals = D.kr_power_series[t];
+      if (!vals || !hasValues(vals)) return;
+      const isKospi = t === 'KOSPI';
+      const isKosdaq = t === 'KOSDAQ';
+      traces.push({{
+        x: D.kr_power_dates,
+        y: vals,
+        type: 'scatter',
+        mode: 'lines',
+        name: labelMap[t] || t,
+        connectgaps: true,
+        _key: t,
+        line: {{
+          color: colorMap[t] || '#666',
+          width: (isKospi || isKosdaq) ? 2.6 : 2.4,
+          dash: isKospi ? 'dot' : (isKosdaq ? 'dash' : 'solid'),
+          shape: 'spline',
+          smoothing: 1.0
+        }},
+        hoverlabel: {{font: {{size: 13}}}}
+      }});
+    }});
+    if (traces.length === 0) {{ showEmpty(id); return; }}
+
+    const ranking = traces
+      .map(t => {{
+        const lastVal = [...t.y].reverse().find(v => v !== null && v !== undefined);
+        return {{key: t._key, name: t.name, last: lastVal}};
+      }})
+      .filter(x => x.last !== undefined && x.last !== null)
+      .sort((a, b) => b.last - a.last);
+
+    const lineHeight = 0.05;
+    const boxTop = 0.985;
+    const boxLeft = 0.012;
+    const rankAnnotations = [];
+    ranking.forEach((x, i) => {{
+      const color = colorMap[x.key] || '#333';
+      rankAnnotations.push({{
+        xref: 'paper', yref: 'paper',
+        x: boxLeft, y: boxTop - (i * lineHeight),
+        xanchor: 'left', yanchor: 'top',
+        align: 'left', showarrow: false,
+        text: '<b>' + (i + 1) + '위</b> ' + x.name + '<b> ' + x.last.toFixed(1) + '</b>',
+        font: {{size: 15, color: color, family: 'system-ui'}}
+      }});
+    }});
+
+    Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
+      title: {{text: '코스피 + 코스닥 + 전력기기 대표주 누적 추세 (Base 100)', font: {{size: 16}}}},
+      yaxis: {{title: {{text: 'Base 100', font: {{size: 13}}}}, gridcolor: '#F3F4F6'}},
+      xaxis: {{gridcolor: '#F3F4F6'}},
+      legend: {{orientation: 'h', y: -0.08, x: 0.5, xanchor: 'center', font: {{size: 12}}}},
+      margin: {{t: 60, r: 40, b: 90, l: 60}},
+      annotations: rankAnnotations,
+      hovermode: 'x unified'
+    }}), {{displayModeBar: false, responsive: true}});
+  }} catch (e) {{ console.error('kr power plot:', e); showEmpty(id); }}
+}})();
 
 safePlot('c_kr_semi', [
   {{x: D.dates, y: D.kospi_base100, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#888', width: 1.2, dash: 'dot'}}}},
