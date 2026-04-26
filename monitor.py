@@ -31,6 +31,7 @@ SECTOR_BASKETS = {
     "바이오":   ["068270", "207940", "196170", "328130"],
     "2차전지":  ["373220", "006400", "051910", "096770"],
     "금융":     ["105560", "055550", "086790", "316140"],
+    "전기":     ["298040", "010120", "267260", "062040"],
 }
 
 
@@ -69,15 +70,42 @@ def fetch_usdjpy_series(days=LOOKBACK_DAYS * 3):
 
 
 def fetch_global_liquidity_proxy():
-    """A안: 주요 중앙은행 자산 합계(정규화 proxy) + USDJPY(Stooq 우선)."""
-    series = {}
-    for sid, nm in GLOBAL_LIQUIDITY_SERIES.items():
-        s = fetch_fred_series(sid, nm)
-        if not s.empty:
-            series[nm] = s
+    """
+    주요 중앙은행 자산 합계(USD 환산 정규화 proxy) + USDJPY.
+    - FED (WALCL): USD → 그대로 사용
+    - ECB (ECBASSETSW): EUR → EURUSD로 USD 환산
+    - BOJ (JPNASSETS): JPY → USDJPY로 USD 환산 (핵심: 엔 약세 반영)
+    """
+    # FED 자산 (USD, 단위: 백만)
+    fed = fetch_fred_series("WALCL", "fed_usd")
+    # ECB 자산 (EUR) + EUR/USD 환율
+    ecb_eur = fetch_fred_series("ECBASSETSW", "ecb_eur")
+    eurusd   = fetch_fred_series("DEXUSEU", "eurusd")
+    # BOJ 자산 (JPY, 단위: 백만엔) + USD/JPY 환율
+    boj_jpy = fetch_fred_series("JPNASSETS", "boj_jpy")
+    usdjpy   = fetch_usdjpy_series(days=LOOKBACK_DAYS * 3)
+
+    series_usd = {}
+    if not fed.empty:
+        series_usd["fed_usd"] = fed
+
+    if not ecb_eur.empty and not eurusd.empty:
+        # EUR→USD 환산
+        combined = pd.concat([ecb_eur, eurusd], axis=1).sort_index().ffill().dropna()
+        if not combined.empty:
+            ecb_usd = combined["ecb_eur"] * combined["eurusd"]
+            series_usd["ecb_usd"] = ecb_usd.rename("ecb_usd")
+
+    if not boj_jpy.empty and not usdjpy.empty:
+        # JPY→USD 환산: BOJ자산(JPY) / USDJPY환율
+        combined = pd.concat([boj_jpy, usdjpy], axis=1).sort_index().ffill().dropna()
+        if not combined.empty:
+            boj_usd = combined["boj_jpy"] / combined["usdjpy"]
+            series_usd["boj_usd"] = boj_usd.rename("boj_usd")
+
     proxy = pd.Series(dtype=float, name="global_liquidity")
-    if series:
-        df = pd.concat(series.values(), axis=1).sort_index().ffill().dropna(how="all")
+    if series_usd:
+        df = pd.concat(series_usd.values(), axis=1).sort_index().ffill().dropna(how="all")
         if not df.empty:
             normalized = []
             for c in df.columns:
@@ -87,7 +115,7 @@ def fetch_global_liquidity_proxy():
                 normalized.append(col / col.iloc[0] * 100)
             if normalized:
                 proxy = pd.concat(normalized, axis=1).mean(axis=1).rename("global_liquidity")
-    usdjpy = fetch_usdjpy_series(days=LOOKBACK_DAYS * 3)
+
     return {"global_liquidity": proxy, "usdjpy": usdjpy}
 
 
@@ -520,7 +548,7 @@ KR_SHIP_STOCKS = {
     "HD_KSH":      ("009540", "HD한국조선해양"),
     "HANWHA_OC":   ("042660", "한화오션"),
     "SAMSUNG_HI":  ("010140", "삼성중공업"),
-    "HD_MIPO":     ("010620", "현대미포조선"),
+    "HD_HHI":      ("329180", "HD현대중공업"),
 }
 
 
@@ -689,7 +717,7 @@ MAIN_COLS = [
     "credit_balance_eok",
     "samsung_ret_pct", "hynix_ret_pct",
     "sp500", "nasdaq", "vix", "nvda", "ust10y", "cor1m",
-    "sec_반도체", "sec_방산조선", "sec_바이오", "sec_2차전지", "sec_금융",
+    "sec_반도체", "sec_방산조선", "sec_바이오", "sec_2차전지", "sec_금융", "sec_전기",
 ]
 
 
@@ -1215,6 +1243,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
         "sec_금융": base100("sec_금융"),
         "sec_2차전지": base100("sec_2차전지"),
         "sec_바이오": base100("sec_바이오"),
+        "sec_전기": base100("sec_전기"),
         "sp500_range": y_range([sp500, ma_series("sp500", 200)]),
         "nasdaq_range": y_range([nasdaq, ma_series("nasdaq", 200)]),
         "kospi_range": y_range([kospi, ma_series("kospi", 200)]),
@@ -1505,7 +1534,6 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
   <div class="chart"><div id="c_us_indices" style="height:480px;"></div></div>
   <div class="chart-grid">
     <div class="chart"><div id="c_us_vix" style="height:280px;"></div></div>
-    <div class="chart"><div id="c_us_nvda" style="height:280px;"></div></div>
   </div>
   <div class="chart"><div id="c_us_rate" style="height:280px;"></div></div>
   <div class="chart"><div id="c_us_cor1m" style="height:300px;"></div></div>
@@ -1680,7 +1708,7 @@ safePlot('c_kr_credit', [
       'HD_KSH':     '#DC2626',
       'HANWHA_OC':  '#F59E0B',
       'SAMSUNG_HI': '#10B981',
-      'HD_MIPO':    '#7C3AED'
+      'HD_HHI':    '#7C3AED'
     }};
     const labelMap = {{
       'KOSPI':      '코스피',
@@ -1688,9 +1716,9 @@ safePlot('c_kr_credit', [
       'HD_KSH':     'HD한국조선해양',
       'HANWHA_OC':  '한화오션',
       'SAMSUNG_HI': '삼성중공업',
-      'HD_MIPO':    '현대미포조선'
+      'HD_HHI':    'HD현대중공업'
     }};
-    const order = ['KOSPI', 'KOSDAQ', 'HD_KSH', 'HANWHA_OC', 'SAMSUNG_HI', 'HD_MIPO'];
+    const order = ['KOSPI', 'KOSDAQ', 'HD_KSH', 'HANWHA_OC', 'SAMSUNG_HI', 'HD_HHI'];
     const traces = [];
     order.forEach(t => {{
       const vals = D.kr_ship_series[t];
@@ -1764,7 +1792,8 @@ safePlot('c_kr_sector', [
   {{x: D.dates, y: D.sec_방산조선, type: 'scatter', mode: 'lines', name: '방산조선', connectgaps: false, line: {{color: '#534AB7', width: 2.0}}}},
   {{x: D.dates, y: D.sec_바이오, type: 'scatter', mode: 'lines', name: '바이오', connectgaps: false, line: {{color: '#2AA198', width: 1.8}}}},
   {{x: D.dates, y: D.sec_2차전지, type: 'scatter', mode: 'lines', name: '2차전지', connectgaps: false, line: {{color: '#BA7517', width: 1.8}}}},
-  {{x: D.dates, y: D.sec_금융, type: 'scatter', mode: 'lines', name: '금융', connectgaps: false, line: {{color: '#888', width: 1.8}}}}
+  {{x: D.dates, y: D.sec_금융, type: 'scatter', mode: 'lines', name: '금융', connectgaps: false, line: {{color: '#888', width: 1.8}}}},
+  {{x: D.dates, y: D.sec_전기, type: 'scatter', mode: 'lines', name: '전기', connectgaps: false, line: {{color: '#DC2626', width: 2.0}}}}
 ], '업종 바구니 누적 추세 (Base 100)', {{yaxis: {{title: 'Base 100'}}}});
 
 // === 스토리지 종목 누적 추세 (STX, WDC + S&P500, 나스닥 Base 100) ===
@@ -1936,8 +1965,6 @@ safePlot('c_kr_sector', [
 }})();
 
 safePlot('c_us_vix', [{{x: D.dates, y: D.vix, type: 'scatter', mode: 'lines', fill: 'tozeroy', name: 'VIX', connectgaps: false, line: {{color: '#A32D2D', width: 2.2}}, fillcolor: 'rgba(163,45,45,0.10)'}}], 'VIX 공포지수');
-
-safePlot('c_us_nvda', [{{x: D.dates, y: D.nvda, type: 'scatter', mode: 'lines', name: 'NVDA', connectgaps: false, line: {{color: '#1D9E75', width: 2.2}}}}], '엔비디아');
 
 safePlot('c_us_rate', [{{x: D.dates, y: D.ust10y, type: 'scatter', mode: 'lines', name: '10Y', connectgaps: false, line: {{color: '#BA7517', width: 2.2}}}}], '미국 10년물 국채금리 (%)');
 
