@@ -35,11 +35,6 @@ SECTOR_BASKETS = {
 }
 
 
-GLOBAL_LIQUIDITY_SERIES = {
-    "WALCL": "fed_assets",
-    "ECBASSETSW": "ecb_assets",
-    "JPNASSETS": "boj_assets",
-}
 
 # 공공데이터포털 서비스키 (data.go.kr) - GitHub Secret: DATA_GO_KR_API_KEY
 DATA_GO_KR_KEY = os.environ.get("DATA_GO_KR_API_KEY", "")
@@ -62,61 +57,18 @@ def fetch_fred_series(series_id, name=None, days=LOOKBACK_DAYS * 3):
         return pd.Series(dtype=float, name=name or series_id)
 
 
-def fetch_usdjpy_series(days=LOOKBACK_DAYS * 3):
-    usdjpy = fetch_fred_series("DEXJPUS", "usdjpy", days=days)
-    if not usdjpy.empty:
-        return usdjpy
-    return pd.Series(dtype=float, name="usdjpy")
-
-
-def fetch_global_liquidity_proxy():
+def fetch_fed_debt(days=LOOKBACK_DAYS * 10):
     """
-    주요 중앙은행 자산 합계(USD 환산 정규화 proxy) + USDJPY.
-    - FED (WALCL): USD → 그대로 사용
-    - ECB (ECBASSETSW): EUR → EURUSD로 USD 환산
-    - BOJ (JPNASSETS): JPY → USDJPY로 USD 환산 (핵심: 엔 약세 반영)
+    FRED: Federal Debt Held by Federal Reserve Banks (FDHBFRBN).
+    분기별 데이터, 단위: 십억 달러 (Billions of Dollars).
     """
-    # FED 자산 (USD, 단위: 백만)
-    fed = fetch_fred_series("WALCL", "fed_usd")
-    # ECB 자산 (EUR) + EUR/USD 환율
-    ecb_eur = fetch_fred_series("ECBASSETSW", "ecb_eur")
-    eurusd   = fetch_fred_series("DEXUSEU", "eurusd")
-    # BOJ 자산 (JPY, 단위: 백만엔) + USD/JPY 환율
-    boj_jpy = fetch_fred_series("JPNASSETS", "boj_jpy")
-    usdjpy   = fetch_usdjpy_series(days=LOOKBACK_DAYS * 3)
+    s = fetch_fred_series("FDHBFRBN", "fed_debt", days=days)
+    if not s.empty:
+        print(f"  fed_debt (FDHBFRBN): {len(s)} rows, latest {float(s.iloc[-1]):.1f}B")
+    else:
+        print("  [warn] fed_debt: empty")
+    return s
 
-    series_usd = {}
-    if not fed.empty:
-        series_usd["fed_usd"] = fed
-
-    if not ecb_eur.empty and not eurusd.empty:
-        # EUR→USD 환산
-        combined = pd.concat([ecb_eur, eurusd], axis=1).sort_index().ffill().dropna()
-        if not combined.empty:
-            ecb_usd = combined["ecb_eur"] * combined["eurusd"]
-            series_usd["ecb_usd"] = ecb_usd.rename("ecb_usd")
-
-    if not boj_jpy.empty and not usdjpy.empty:
-        # JPY→USD 환산: BOJ자산(JPY) / USDJPY환율
-        combined = pd.concat([boj_jpy, usdjpy], axis=1).sort_index().ffill().dropna()
-        if not combined.empty:
-            boj_usd = combined["boj_jpy"] / combined["usdjpy"]
-            series_usd["boj_usd"] = boj_usd.rename("boj_usd")
-
-    proxy = pd.Series(dtype=float, name="global_liquidity")
-    if series_usd:
-        df = pd.concat(series_usd.values(), axis=1).sort_index().ffill().dropna(how="all")
-        if not df.empty:
-            normalized = []
-            for c in df.columns:
-                col = pd.to_numeric(df[c], errors="coerce").dropna()
-                if col.empty or col.iloc[0] == 0:
-                    continue
-                normalized.append(col / col.iloc[0] * 100)
-            if normalized:
-                proxy = pd.concat(normalized, axis=1).mean(axis=1).rename("global_liquidity")
-
-    return {"global_liquidity": proxy, "usdjpy": usdjpy}
 
 
 def safe(fn_name, fn, default=None, retries=3, sleep=2):
@@ -808,7 +760,7 @@ def update_data():
     m7_basket = safe("m7_plus", fetch_m7_plus_basket, default={})
     us_indices_basket = safe("us_indices", fetch_us_indices_basket, default={})
     storage_basket = safe("storage", fetch_storage_basket, default={})
-    gl = safe("global_liquidity", fetch_global_liquidity_proxy, default={"global_liquidity": pd.Series(dtype=float), "usdjpy": pd.Series(dtype=float)})
+    fed_debt = safe("fed_debt", fetch_fed_debt, default=pd.Series(dtype=float, name="fed_debt"))
 
     extras = {
         "us_margin_debt": us_margin_debt,         # {date: bil_usd}  월별
@@ -817,8 +769,7 @@ def update_data():
         "m7_basket": m7_basket,                   # {ticker: Series}
         "us_indices_basket": us_indices_basket,   # {ticker: Series}
         "storage_basket": storage_basket,         # {ticker: Series}
-        "global_liquidity": gl.get("global_liquidity", pd.Series(dtype=float)),
-        "usdjpy": gl.get("usdjpy", pd.Series(dtype=float)),
+        "fed_debt": fed_debt,                     # Series (분기, 십억달러)
     }
     return combined, extras
 
@@ -1398,32 +1349,16 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     js_data["storage_dates"] = storage_dates
     js_data["storage_series"] = storage_series
 
-    # 3-1. 글로벌 유동성 proxy + 달러-엔
-    gl_proxy = extras.get("global_liquidity", pd.Series(dtype=float))
-    usdjpy = extras.get("usdjpy", pd.Series(dtype=float))
-    gl_dates = []
-    gl_proxy_vals = []
-    usdjpy_vals = []
-    if (isinstance(gl_proxy, pd.Series) and not gl_proxy.empty) or (isinstance(usdjpy, pd.Series) and not usdjpy.empty):
-        anchor = None
-        if isinstance(gl_proxy, pd.Series) and not gl_proxy.empty:
-            anchor = gl_proxy
-        elif isinstance(usdjpy, pd.Series) and not usdjpy.empty:
-            anchor = usdjpy
-        if anchor is not None:
-            cutoff = TODAY - dt.timedelta(days=LOOKBACK_DAYS * 3)
-            anchor = anchor[anchor.index >= cutoff]
-            if not anchor.empty:
-                gl_dates = [d.strftime("%Y-%m-%d") for d in anchor.index]
-                if isinstance(gl_proxy, pd.Series) and not gl_proxy.empty:
-                    gp = gl_proxy[gl_proxy.index >= cutoff].reindex(anchor.index).ffill().bfill()
-                    gl_proxy_vals = [None if pd.isna(v) else round(float(v), 2) for v in gp]
-                if isinstance(usdjpy, pd.Series) and not usdjpy.empty:
-                    uj = usdjpy[usdjpy.index >= cutoff].reindex(anchor.index).ffill().bfill()
-                    usdjpy_vals = [None if pd.isna(v) else round(float(v), 2) for v in uj]
-    js_data["gl_dates"] = gl_dates
-    js_data["global_liquidity"] = gl_proxy_vals
-    js_data["usdjpy"] = usdjpy_vals
+    # 3-1. 연준 보유 국채 (FDHBFRBN, 분기별, 십억달러)
+    fed_debt = extras.get("fed_debt", pd.Series(dtype=float))
+    fed_debt_dates = []
+    fed_debt_vals = []
+    if isinstance(fed_debt, pd.Series) and not fed_debt.empty:
+        s = pd.to_numeric(fed_debt, errors="coerce").dropna().sort_index()
+        fed_debt_dates = [d.strftime("%Y-%m-%d") for d in s.index]
+        fed_debt_vals = [round(float(v), 1) for v in s]
+    js_data["fed_debt_dates"] = fed_debt_dates
+    js_data["fed_debt_vals"] = fed_debt_vals
 
 
 
@@ -2099,24 +2034,37 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
   }} catch (e) {{ console.error('m7 plot:', e); showEmpty(id); }}
 }})();
 
-// === 글로벌 유동성 Proxy vs 달러-엔 ===
+// === 연준 보유 국채 (Federal Debt Held by Federal Reserve Banks, FDHBFRBN) ===
 (function() {{
   const id = 'c_us_gl';
   const el = document.getElementById(id);
   if (!el) return;
-  const hasGL = D.gl_dates && D.gl_dates.length > 0 && hasValues(D.global_liquidity);
-  const hasUJ = D.gl_dates && D.gl_dates.length > 0 && hasValues(D.usdjpy);
-  if (!hasGL && !hasUJ) {{ showEmpty(id); return; }}
+  if (!D.fed_debt_dates || D.fed_debt_dates.length === 0 || !hasValues(D.fed_debt_vals)) {{
+    showEmpty(id); return;
+  }}
   try {{
-    const traces = [];
-    if (hasGL) traces.push({{x:D.gl_dates,y:D.global_liquidity,type:'scatter',mode:'lines',name:'글로벌 유동성 proxy',connectgaps:true,line:{{color:'#185FA5',width:2.8}}}});
-    if (hasUJ) traces.push({{x:D.gl_dates,y:D.usdjpy,type:'scatter',mode:'lines',name:'달러-엔',yaxis:'y2',connectgaps:true,line:{{color:'#9ca3af',width:2.1}}}});
-    Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
-      title:{{text:'글로벌 유동성 Proxy vs 달러-엔', font:{{size:14}}}},
-      yaxis:{{title:'Proxy (Base 100)'}},
-      yaxis2:{{title:'엔', overlaying:'y', side:'right'}}
-    }}), {{displayModeBar:false, responsive:true}});
-  }} catch (e) {{ console.error('gl plot:', e); showEmpty(id); }}
+    // 최신값 대비 색상: 고점 대비 하락 중이면 파랑(QT), 상승 중이면 빨강(QE)
+    const vals = D.fed_debt_vals;
+    const peak = Math.max(...vals.filter(v => v !== null));
+    const latest = vals[vals.length - 1];
+    const isQT = latest < peak * 0.98;
+    const barColor = isQT ? '#185FA5' : '#A32D2D';
+
+    Plotly.newPlot(id, [{{
+      x: D.fed_debt_dates,
+      y: D.fed_debt_vals,
+      type: 'bar',
+      name: '연준 보유 국채',
+      marker: {{color: barColor, opacity: 0.85}},
+      hovertemplate: '%{{x}}<br>%{{y:.0f}}십억달러<extra></extra>'
+    }}], Object.assign({{}}, base, {{
+      title: {{text: '연준 보유 국채 (FDHBFRBN) · 십억 달러 · 분기별<br><span style="font-size:11px;color:#888">출처: U.S. Department of the Treasury via FRED®</span>', font: {{size: 14}}}},
+      yaxis: {{title: '십억 USD (Billions)', gridcolor: '#F3F4F6'}},
+      xaxis: {{gridcolor: '#F3F4F6'}},
+      bargap: 0.3,
+      margin: {{t: 60, r: 30, b: 40, l: 65}}
+    }}), {{displayModeBar: false, responsive: true}});
+  }} catch (e) {{ console.error('fed debt plot:', e); showEmpty(id); }}
 }})();
 
 
@@ -2135,7 +2083,7 @@ def main():
         print(f"[error] update_data fatal: {e}")
         import traceback; traceback.print_exc()
         df = load_history()
-        extras = {"us_margin_debt": {}, "m7_basket": {}, "global_liquidity": pd.Series(dtype=float), "usdjpy": pd.Series(dtype=float)}
+        extras = {"us_margin_debt": {}, "m7_basket": {}, "fed_debt": pd.Series(dtype=float)}
 
     signals = compute_signals(df, extras)
     regime_kr = compute_regime(df["kospi"]) if not df.empty else {}
