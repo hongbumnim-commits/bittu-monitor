@@ -71,92 +71,122 @@ def fetch_fed_debt(days=LOOKBACK_DAYS * 10):
 
 
 
-def fetch_vkospi(days=LOOKBACK_DAYS):
+def fetch_kr_per_pbr(days=LOOKBACK_DAYS * 3):
     """
-    VKOSPI - 코스피 변동성 지수 (한국판 VIX). KRX 발표, FDR로 수집.
-    높을수록 시장 공포 / 낮을수록 탐욕.
+    KRX 통계 - KOSPI 시장 전체 PER/PBR/배당수익률 추이.
+    bld: MDCSTAT03901 (날짜 범위 지정, 일별)
+    Returns: dict with keys 'per', 'pbr', 'dvy' → pd.Series each
     """
-    start = (TODAY - dt.timedelta(days=days)).strftime("%Y-%m-%d")
-    end = TODAY.strftime("%Y-%m-%d")
-    try:
-        df = fdr.DataReader("VKOSPI", start, end)
-        if df is not None and not df.empty:
-            col = "Close" if "Close" in df.columns else df.columns[0]
-            s = pd.to_numeric(df[col], errors="coerce").dropna()
-            s.index = pd.to_datetime(s.index).date
-            s = s.rename("vkospi")
-            print(f"  vkospi: {len(s)} rows, latest {float(s.iloc[-1]):.2f}")
-            return s
-    except Exception as e:
-        print(f"  [warn] vkospi fdr: {e}")
-    return pd.Series(dtype=float, name="vkospi")
-
-
-def fetch_kr_marcap(days=LOOKBACK_DAYS * 3):
-    """
-    한국 증시 전체 시가총액 (KOSPI + KOSDAQ 합산, 억원).
-    KRX 통계 공개 API 사용.
-    """
-    import json as _json
     cutoff = TODAY - dt.timedelta(days=days)
-
-    # KRX open API - 일별 시장 통계 (KOSPI/KOSDAQ 시가총액 합계)
-    markets = {
-        "STK": "KOSPI",   # bld 코드: STK=유가증권
-        "KSQ": "KOSDAQ",  # KSQ=코스닥
-    }
-    totals = {}  # {date: 억원}
-
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Referer": "http://data.krx.co.kr/",
         "Accept": "application/json, text/javascript, */*; q=0.01",
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
     }
+    empty = {
+        "per": pd.Series(dtype=float, name="kospi_per"),
+        "pbr": pd.Series(dtype=float, name="kospi_pbr"),
+        "dvy": pd.Series(dtype=float, name="kospi_dvy"),
+    }
 
-    for mkt_id, mkt_name in markets.items():
+    per_data, pbr_data, dvy_data = {}, {}, {}
+    for mkt_id, mkt_label in [("STK", "KOSPI"), ("KSQ", "KOSDAQ")]:
+        payload = {
+            "bld":        "dbms/MDC/STAT/standard/MDCSTAT03901",
+            "mktId":      mkt_id,
+            "strtDd":     cutoff.strftime("%Y%m%d"),
+            "endDd":      TODAY.strftime("%Y%m%d"),
+            "csvxls_isNo": "false",
+        }
         try:
-            start_str = cutoff.strftime("%Y%m%d")
-            end_str   = TODAY.strftime("%Y%m%d")
-            payload = {
-                "bld":        "dbms/MDC/STAT/standard/MDCSTAT01501",
-                "mktId":      mkt_id,
-                "trdDd":      end_str,
-                "share":      "1",
-                "money":      "1",
-                "csvxls_isNo": "false",
-            }
             r = requests.post(
                 "http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd",
-                data=payload, headers=headers, timeout=15,
+                data=payload, headers=headers, timeout=20,
             )
             if r.status_code != 200:
-                print(f"  [warn] krx marcap {mkt_name}: status {r.status_code}")
+                print(f"  [warn] krx per_pbr {mkt_label}: status {r.status_code}")
                 continue
             data = r.json()
-            # 최신 1개 값만 있을 수 있음 → 날짜별 루프
-            rows = data.get("OutBlock_1", []) or data.get("output", [])
+            rows = (data.get("output", []) or data.get("OutBlock_1", []) or
+                    data.get("output1", []) or [])
+            print(f"  krx per_pbr {mkt_label}: {len(rows)} rows")
             for row in rows:
-                ds  = str(row.get("TRD_DD", "")).replace("/", "").replace("-", "").strip()
-                val = str(row.get("MKTCAP", "")).replace(",", "").strip()
-                if len(ds) == 8 and val:
-                    try:
-                        d = dt.date(int(ds[:4]), int(ds[4:6]), int(ds[6:8]))
-                        v = float(val) / 100  # 백만원 → 억원
-                        totals[d] = totals.get(d, 0) + v
-                    except Exception:
-                        continue
+                ds = str(row.get("BAS_DD", "")).replace("/", "").replace("-", "").strip()
+                if len(ds) != 8:
+                    continue
+                try:
+                    d = dt.date(int(ds[:4]), int(ds[4:6]), int(ds[6:8]))
+                    # PER
+                    for fld in ["MKTMK_PER", "PER", "IDX_PER"]:
+                        v = str(row.get(fld, "")).replace(",", "").strip()
+                        if v and v not in ("-", "", "nan"):
+                            per_data[d] = float(v); break
+                    # PBR
+                    for fld in ["MKTMK_PBR", "PBR", "IDX_PBR"]:
+                        v = str(row.get(fld, "")).replace(",", "").strip()
+                        if v and v not in ("-", "", "nan"):
+                            pbr_data[d] = float(v); break
+                    # 배당수익률
+                    for fld in ["MKTMK_DVY", "DVY", "IDX_DVY"]:
+                        v = str(row.get(fld, "")).replace(",", "").strip()
+                        if v and v not in ("-", "", "nan"):
+                            dvy_data[d] = float(v); break
+                except Exception:
+                    continue
+            # KOSPI만 사용 (KSQ는 PBR 이상치 많음)
+            if mkt_id == "STK" and per_data:
+                break
         except Exception as e:
-            print(f"  [warn] krx marcap {mkt_name}: {e}")
+            print(f"  [warn] krx per_pbr {mkt_label}: {e}")
 
-    if totals:
-        s = pd.Series(totals, name="kr_marcap").sort_index()
-        s = s[s.index >= cutoff]
-        print(f"  kr_marcap: {len(s)} rows, latest {float(s.iloc[-1]):.0f}억원")
+    if not per_data:
+        print("  [warn] krx per_pbr: no data returned")
+        return empty
+
+    def to_series(d, name, lo=0.1, hi=500):
+        s = pd.Series(d, name=name).sort_index()
+        s = s[(s >= lo) & (s <= hi)]
         return s
 
-    print("  [warn] kr_marcap: all sources failed, skipping")
-    return pd.Series(dtype=float, name="kr_marcap")
+    result = {
+        "per": to_series(per_data, "kospi_per", 0.1, 200),
+        "pbr": to_series(pbr_data, "kospi_pbr", 0.01, 20),
+        "dvy": to_series(dvy_data, "kospi_dvy", 0.01, 20),
+    }
+    if not result["per"].empty:
+        print(f"  kospi_per: {len(result['per'])} rows, latest {float(result['per'].iloc[-1]):.1f}")
+    return result
+
+
+def fetch_buffett_indicator():
+    """
+    국가별 버핏 지표 (주식시장 시가총액 / GDP %) - World Bank via FRED.
+    연간 데이터. FRED 코드: DDDM01{CC}A156NWDB
+    Countries: KR, US, JP, TW, CN, DE
+    Returns: dict {country_label: latest_value_pct}
+    """
+    country_map = {
+        "한국":   "DDDM01KRA156NWDB",
+        "미국":   "DDDM01USA156NWDB",
+        "일본":   "DDDM01JPA156NWDB",
+        "대만":   "DDDM01TWA156NWDB",
+        "중국":   "DDDM01CNA156NWDB",
+        "독일":   "DDDM01DEA156NWDB",
+        "영국":   "DDDM01GBA156NWDB",
+    }
+    result = {}   # {label: (year_str, value_pct)}
+    for label, series_id in country_map.items():
+        s = fetch_fred_series(series_id, label, days=365 * 30)
+        if not s.empty:
+            s_clean = pd.to_numeric(s, errors="coerce").dropna()
+            if not s_clean.empty:
+                latest_date = s_clean.index[-1]
+                latest_val  = float(s_clean.iloc[-1])
+                year_str = str(latest_date)[:4]
+                result[label] = (year_str, round(latest_val, 1))
+                print(f"  buffett {label}: {year_str} = {latest_val:.1f}%")
+    return result
 
 
 def fetch_cnn_fear_greed(days=LOOKBACK_DAYS):
@@ -799,7 +829,7 @@ def fetch_foreign_holding_kr():
 MAIN_COLS = [
     "date",
     "kospi", "kosdaq", "samsung", "hynix",
-    "credit_balance_eok", "vkospi",
+    "credit_balance_eok",
     "samsung_ret_pct", "hynix_ret_pct",
     "sp500", "nasdaq", "vix", "nvda", "ust10y", "cor1m",
     "sec_반도체", "sec_방산조선", "sec_바이오", "sec_2차전지", "sec_금융", "sec_전기",
@@ -851,8 +881,6 @@ def update_data():
     ust10y = safe("ust10y_fred", fetch_ust10y_fred, default=pd.Series(dtype=float, name="ust10y"))
     cor1m = safe("cor1m", fetch_cor1m, default=pd.Series(dtype=float, name="cor1m"))
 
-    vkospi = safe("vkospi", fetch_vkospi, default=pd.Series(dtype=float, name="vkospi"))
-
     sectors = {}
     for name, tickers in SECTOR_BASKETS.items():
         s = safe(f"sector_{name}", lambda tt=tickers: fetch_sector_basket(tt), default=pd.Series(dtype=float))
@@ -864,7 +892,7 @@ def update_data():
     series_dict = {
         "kospi": kospi, "kosdaq": kosdaq, "samsung": samsung, "hynix": hynix,
         "sp500": sp500, "nasdaq": nasdaq, "vix": vix, "nvda": nvda, "ust10y": ust10y,
-        "cor1m": cor1m, "vkospi": vkospi,
+        "cor1m": cor1m,
         **sectors
     }
     df = pd.DataFrame(series_dict)
@@ -895,20 +923,22 @@ def update_data():
     m7_basket = safe("m7_plus", fetch_m7_plus_basket, default={})
     us_indices_basket = safe("us_indices", fetch_us_indices_basket, default={})
     storage_basket = safe("storage", fetch_storage_basket, default={})
-    fed_debt    = safe("fed_debt",    fetch_fed_debt,        default=pd.Series(dtype=float, name="fed_debt"))
-    kr_marcap   = safe("kr_marcap",   fetch_kr_marcap,       default=pd.Series(dtype=float, name="kr_marcap"))
-    cnn_fg      = safe("cnn_fg",      fetch_cnn_fear_greed,  default=pd.Series(dtype=float, name="cnn_fg"))
+    fed_debt      = safe("fed_debt",       fetch_fed_debt,           default=pd.Series(dtype=float, name="fed_debt"))
+    kr_per_pbr    = safe("kr_per_pbr",     fetch_kr_per_pbr,         default={"per": pd.Series(dtype=float), "pbr": pd.Series(dtype=float), "dvy": pd.Series(dtype=float)})
+    buffett_snap  = safe("buffett",        fetch_buffett_indicator,   default={})
+    cnn_fg        = safe("cnn_fg",         fetch_cnn_fear_greed,      default=pd.Series(dtype=float, name="cnn_fg"))
 
     extras = {
-        "us_margin_debt": us_margin_debt,
-        "kr_power_basket": kr_power_basket,
-        "kr_ship_basket": kr_ship_basket,
-        "m7_basket": m7_basket,
+        "us_margin_debt":   us_margin_debt,
+        "kr_power_basket":  kr_power_basket,
+        "kr_ship_basket":   kr_ship_basket,
+        "m7_basket":        m7_basket,
         "us_indices_basket": us_indices_basket,
-        "storage_basket": storage_basket,
-        "fed_debt": fed_debt,       # Series (분기, 십억달러)
-        "kr_marcap": kr_marcap,     # Series (일별, 억원)
-        "cnn_fg": cnn_fg,           # Series (일별, 0-100)
+        "storage_basket":   storage_basket,
+        "fed_debt":         fed_debt,       # Series (분기, 십억달러)
+        "kr_per_pbr":       kr_per_pbr,     # dict {per/pbr/dvy: Series}
+        "buffett_snap":     buffett_snap,   # dict {국가: (year, value%)}
+        "cnn_fg":           cnn_fg,         # Series (일별, 0-100)
     }
     return combined, extras
 
@@ -1328,7 +1358,6 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
         "nvda": series_connected("nvda", min_val=10, max_daily_jump_pct=40),
         "ust10y": series_connected("ust10y", min_val=0, max_val=10, max_daily_jump_pct=20),
         "cor1m": cor1m,
-        "vkospi": series_connected("vkospi", min_val=1, max_val=150, max_daily_jump_pct=50),
         "sec_반도체": base100("sec_반도체"),
         "sec_방산조선": base100("sec_방산조선"),
         "sec_금융": base100("sec_금융"),
@@ -1342,17 +1371,39 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     }
 
     # --- 추가 데이터 (extras) ---
-    # 0-a. 한국 증시 시가총액 (KOSPI+KOSDAQ 합산, 억원)
-    kr_marcap = extras.get("kr_marcap", pd.Series(dtype=float))
-    if isinstance(kr_marcap, pd.Series) and not kr_marcap.empty:
-        s = pd.to_numeric(kr_marcap, errors="coerce").dropna().sort_index()
-        js_data["kr_marcap_dates"] = [d.strftime("%Y-%m-%d") for d in s.index]
-        js_data["kr_marcap_vals"]  = [round(float(v) / 10000, 1) for v in s]  # 억원 → 조원
-    else:
-        js_data["kr_marcap_dates"] = []
-        js_data["kr_marcap_vals"]  = []
+    # 0-a. KOSPI PER / PBR / 배당수익률 추이 (KRX)
+    kr_per_pbr = extras.get("kr_per_pbr", {}) or {}
+    def _to_js(series_or_none, lo=None, hi=None):
+        if not isinstance(series_or_none, pd.Series) or series_or_none.empty:
+            return {"dates": [], "vals": []}
+        s = pd.to_numeric(series_or_none, errors="coerce").dropna().sort_index()
+        if lo is not None: s = s[s >= lo]
+        if hi is not None: s = s[s <= hi]
+        return {
+            "dates": [d.strftime("%Y-%m-%d") for d in s.index],
+            "vals":  [round(float(v), 2) for v in s],
+        }
+    js_data["kr_per"]  = _to_js(kr_per_pbr.get("per"), lo=0.5, hi=150)
+    js_data["kr_pbr"]  = _to_js(kr_per_pbr.get("pbr"), lo=0.1,  hi=10)
+    js_data["kr_dvy"]  = _to_js(kr_per_pbr.get("dvy"), lo=0.1,  hi=15)
 
-    # 0-b. CNN Fear & Greed
+    # 0-b. 국가별 버핏 지표 스냅샷 (World Bank via FRED, 연간)
+    buffett_snap = extras.get("buffett_snap", {}) or {}
+    if buffett_snap:
+        labels, vals, years = [], [], []
+        for lbl, (yr, v) in sorted(buffett_snap.items(), key=lambda x: -x[1][1]):
+            labels.append(lbl)
+            vals.append(v)
+            years.append(yr)
+        js_data["buffett_labels"] = labels
+        js_data["buffett_vals"]   = vals
+        js_data["buffett_years"]  = years
+    else:
+        js_data["buffett_labels"] = []
+        js_data["buffett_vals"]   = []
+        js_data["buffett_years"]  = []
+
+    # 0-c. CNN Fear & Greed
     cnn_fg = extras.get("cnn_fg", pd.Series(dtype=float))
     if isinstance(cnn_fg, pd.Series) and not cnn_fg.empty:
         s = pd.to_numeric(cnn_fg, errors="coerce").dropna().sort_index()
@@ -1604,8 +1655,8 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     <div class="chart"><div id="c_kr_rel" style="height:320px;"></div></div>
     </div>
   <div class="chart-grid">
-    <div class="chart"><div id="c_kr_vkospi" style="height:280px;"></div></div>
-    <div class="chart"><div id="c_kr_marcap" style="height:280px;"></div></div>
+    <div class="chart"><div id="c_kr_per_pbr" style="height:300px;"></div></div>
+    <div class="chart"><div id="c_kr_buffett" style="height:300px;"></div></div>
   </div>
   <div class="chart"><div id="c_kr_credit" style="height:300px;"></div></div>
   <div class="chart"><div id="c_kr_power" style="height:680px;"></div></div>
@@ -1682,72 +1733,82 @@ safePlot('c_kr_rel', [
 ], '코스피 vs 코스닥 상대 추세 (Base 100)', {{yaxis: {{title: 'Base 100'}}}});
 
 
-// === VKOSPI (한국 변동성 지수 / 공포지수) ===
+// === KOSPI PER & PBR 추이 (KRX) ===
 (function() {{
-  const id = 'c_kr_vkospi';
+  const id = 'c_kr_per_pbr';
   const el = document.getElementById(id);
   if (!el) return;
-  if (!hasValues(D.vkospi)) {{ showEmpty(id); return; }}
+  const per  = D.kr_per  || {{}};
+  const pbr  = D.kr_pbr  || {{}};
+  const hasPER = per.dates && per.dates.length > 0 && hasValues(per.vals);
+  const hasPBR = pbr.dates && pbr.dates.length > 0 && hasValues(pbr.vals);
+  if (!hasPER && !hasPBR) {{ showEmpty(id, 'KOSPI PER/PBR 데이터 없음 (KRX API)'); return; }}
   try {{
-    const vals = D.vkospi.filter(v => v !== null);
-    const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
-    // 구간 색상: 20 이상이면 공포(빨강), 15 미만이면 탐욕(초록), 중간은 주황
-    const colorArr = D.vkospi.map(v => {{
-      if (v === null) return 'rgba(0,0,0,0)';
-      if (v >= 25) return 'rgba(163,45,45,0.85)';
-      if (v >= 18) return 'rgba(214,90,48,0.85)';
-      if (v >= 13) return 'rgba(186,117,23,0.85)';
-      return 'rgba(29,158,117,0.85)';
+    const traces = [];
+    if (hasPER) traces.push({{
+      x: per.dates, y: per.vals, type: 'scatter', mode: 'lines',
+      name: 'PER (주가수익비율)', connectgaps: true,
+      line: {{color: '#185FA5', width: 2.4}},
+      hovertemplate: '%{{x}}<br>PER %{{y:.1f}}배<extra></extra>'
     }});
-    Plotly.newPlot(id, [
-      {{x: D.dates, y: D.vkospi, type: 'scatter', mode: 'lines', fill: 'tozeroy',
-        name: 'VKOSPI', connectgaps: false,
-        line: {{color: '#A32D2D', width: 2}},
-        fillcolor: 'rgba(163,45,45,0.10)'}},
-      {{x: [D.dates[0], D.dates[D.dates.length-1]], y: [avg, avg], type: 'scatter', mode: 'lines',
-        name: `평균 ${{avg.toFixed(1)}}`, line: {{color: '#888', width: 1, dash: 'dot'}}}}
-    ], Object.assign({{}}, base, {{
-      title: {{text: 'VKOSPI 변동성 지수 (공포지수) · 높을수록 공포', font: {{size: 14}}}},
-      yaxis: {{title: 'VKOSPI', range: [0, Math.max(...vals.filter(Boolean)) * 1.15], gridcolor: '#F3F4F6'}},
-      shapes: [
-        {{type:'rect',xref:'paper',x0:0,x1:1,y0:25,y1:999,fillcolor:'rgba(163,45,45,0.06)',line:{{width:0}}}},
-        {{type:'line',xref:'paper',x0:0,x1:1,y0:25,y1:25,line:{{color:'#A32D2D',width:1,dash:'dot'}}}},
-        {{type:'line',xref:'paper',x0:0,x1:1,y0:13,y1:13,line:{{color:'#1D9E75',width:1,dash:'dot'}}}}
-      ],
-      annotations: [
-        {{xref:'paper',yref:'y',x:1.01,y:25,text:'공포',showarrow:false,font:{{size:11,color:'#A32D2D'}},xanchor:'left'}},
-        {{xref:'paper',yref:'y',x:1.01,y:13,text:'탐욕',showarrow:false,font:{{size:11,color:'#1D9E75'}},xanchor:'left'}}
-      ],
-      margin: {{t:45,r:55,b:35,l:55}}
+    if (hasPBR) traces.push({{
+      x: pbr.dates, y: pbr.vals, type: 'scatter', mode: 'lines',
+      name: 'PBR (주가순자산비율)', yaxis: 'y2', connectgaps: true,
+      line: {{color: '#D85A30', width: 2.2}},
+      hovertemplate: '%{{x}}<br>PBR %{{y:.2f}}배<extra></extra>'
+    }});
+    // 역사적 평균 주석
+    const avgPER = hasPER ? per.vals.filter(Boolean).reduce((a,b)=>a+b,0)/per.vals.filter(Boolean).length : null;
+    const shapes = [];
+    if (avgPER) shapes.push({{type:'line',xref:'paper',x0:0,x1:1,y0:avgPER,y1:avgPER,line:{{color:'#185FA5',width:1,dash:'dot'}}}});
+    Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
+      title: {{text: 'KOSPI PER & PBR 추이 (KRX 기준)', font: {{size: 14}}}},
+      yaxis:  {{title: 'PER (배)', gridcolor: '#F3F4F6', side: 'left'}},
+      yaxis2: {{title: 'PBR (배)', overlaying: 'y', side: 'right', showgrid: false}},
+      shapes,
+      annotations: avgPER ? [{{
+        xref:'paper', yref:'y', x:1.01, y:avgPER,
+        text:`평균 ${{avgPER.toFixed(1)}}`, showarrow:false,
+        font:{{size:10,color:'#185FA5'}}, xanchor:'left'
+      }}] : [],
+      legend: {{orientation:'h', y:-0.15}},
+      margin: {{t:45,r:60,b:45,l:55}}
     }}), {{displayModeBar:false, responsive:true}});
-  }} catch(e) {{ console.error('vkospi plot:', e); showEmpty(id); }}
+  }} catch(e) {{ console.error('per_pbr plot:', e); showEmpty(id); }}
 }})();
 
-// === 한국 증시 시가총액 (KOSPI+KOSDAQ 합산, 조원) ===
+// === 국가별 버핏 지표 비교 (시가총액/GDP %) - World Bank via FRED ===
 (function() {{
-  const id = 'c_kr_marcap';
+  const id = 'c_kr_buffett';
   const el = document.getElementById(id);
   if (!el) return;
-  if (!D.kr_marcap_dates || D.kr_marcap_dates.length === 0 || !hasValues(D.kr_marcap_vals)) {{
-    showEmpty(id, '시가총액 데이터 없음 (KRX API)'); return;
+  if (!D.buffett_labels || D.buffett_labels.length === 0 || !hasValues(D.buffett_vals)) {{
+    showEmpty(id, '버핏 지표 데이터 없음 (FRED/World Bank)'); return;
   }}
   try {{
-    const vals = D.kr_marcap_vals.filter(v => v !== null);
-    const maxV = Math.max(...vals);
-    const minV = Math.min(...vals);
+    // 한국 강조 색, 나머지 회색
+    const colors = D.buffett_labels.map(l => l === '한국' ? '#185FA5' : '#9ca3af');
+    const annotations = D.buffett_labels.map((l, i) => ({{
+      x: l, y: D.buffett_vals[i],
+      text: D.buffett_vals[i].toFixed(0) + '%',
+      showarrow: false, yanchor: 'bottom',
+      font: {{size: 12, color: colors[i], family: 'system-ui', weight: l==='한국'?'bold':'normal'}}
+    }}));
+    const noteYear = D.buffett_years && D.buffett_years.length ? D.buffett_years[0] : '';
     Plotly.newPlot(id, [{{
-      x: D.kr_marcap_dates, y: D.kr_marcap_vals,
-      type: 'scatter', mode: 'lines', fill: 'tozeroy', name: '시가총액(조원)',
-      connectgaps: true,
-      line: {{color: '#185FA5', width: 2.2}},
-      fillcolor: 'rgba(24,95,165,0.10)',
-      hovertemplate: '%{{x}}<br>%{{y:.0f}}조원<extra></extra>'
+      x: D.buffett_labels, y: D.buffett_vals,
+      type: 'bar', marker: {{color: colors, opacity: 0.88}},
+      hovertemplate: '%{{x}}<br>%{{y:.1f}}%<extra></extra>'
     }}], Object.assign({{}}, base, {{
-      title: {{text: '한국 증시 시가총액 KOSPI+KOSDAQ (조원) · KRX', font: {{size: 14}}}},
-      yaxis: {{title: '조원', gridcolor: '#F3F4F6', range: [minV * 0.97, maxV * 1.03]}},
-      margin: {{t:45,r:30,b:35,l:65}}
+      title: {{text: `주요국 버핏 지표 (증시 시가총액/GDP %) · World Bank · ${{noteYear}}`, font: {{size: 13}}}},
+      yaxis: {{title: '시가총액 / GDP (%)', gridcolor: '#F3F4F6'}},
+      xaxis: {{categoryorder: 'total descending'}},
+      annotations,
+      bargap: 0.35,
+      shapes: [{{type:'line',xref:'paper',x0:0,x1:1,y0:100,y1:100,line:{{color:'#888',width:1,dash:'dot'}}}}],
+      margin: {{t:50,r:30,b:40,l:60}}
     }}), {{displayModeBar:false, responsive:true}});
-  }} catch(e) {{ console.error('kr marcap plot:', e); showEmpty(id); }}
+  }} catch(e) {{ console.error('buffett plot:', e); showEmpty(id); }}
 }})();
 
 safePlot('c_kr_credit', [
@@ -2351,7 +2412,7 @@ def main():
         print(f"[error] update_data fatal: {e}")
         import traceback; traceback.print_exc()
         df = load_history()
-        extras = {"us_margin_debt": {}, "m7_basket": {}, "fed_debt": pd.Series(dtype=float), "kr_marcap": pd.Series(dtype=float), "cnn_fg": pd.Series(dtype=float)}
+        extras = {"us_margin_debt": {}, "m7_basket": {}, "fed_debt": pd.Series(dtype=float), "kr_per_pbr": {"per": pd.Series(dtype=float), "pbr": pd.Series(dtype=float), "dvy": pd.Series(dtype=float)}, "buffett_snap": {}, "cnn_fg": pd.Series(dtype=float)}
 
     signals = compute_signals(df, extras)
     regime_kr = compute_regime(df["kospi"]) if not df.empty else {}
