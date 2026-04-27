@@ -1544,10 +1544,8 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
   </div>
   <div class="signal-grid">{kr_cards}</div>
   <div class="section-title">차트</div>
-  <div class="chart-grid">
-    <div class="chart"><div id="c_kr_rel" style="height:320px;"></div></div>
-    </div>
-  <div class="chart"><div id="c_kr_sector_mom" style="height:340px;"></div></div>
+  <div class="chart"><div id="c_kr_rel" style="height:320px;"></div></div>
+  <div class="chart"><div id="c_kr_sector_mom" style="height:360px;"></div></div>
   <div class="chart"><div id="c_kr_krwusd" style="height:280px;"></div></div>
   <div class="chart"><div id="c_kr_credit" style="height:300px;"></div></div>
   <div class="chart"><div id="c_kr_power" style="height:680px;"></div></div>
@@ -1658,12 +1656,12 @@ safePlot('c_kr_rel', [
       opacity: 0.85
     }};
     Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
-      title: {{text: '한국 섹터별 모멘텀 (수익률 %) · 파랑=1주 · 초록=1개월 · 주황=3개월', font: {{size: 13}}}},
+      title: {{text: '한국 섹터별 모멘텀 · 파랑=1주 · 초록=1개월 · 주황=3개월', font: {{size: 13}}}},
       barmode: 'group',
-      xaxis: {{title: '수익률 (%)', gridcolor: '#F3F4F6', zeroline: true, zerolinecolor: '#aaa', zerolinewidth: 1.5}},
+      xaxis: {{ticksuffix: '%', gridcolor: '#F3F4F6', zeroline: true, zerolinecolor: '#bbb', zerolinewidth: 1.5}},
       yaxis: {{gridcolor: '#F3F4F6', automargin: true}},
-      legend: {{orientation: 'h', y: -0.12, x: 0.5, xanchor: 'center'}},
-      margin: {{t: 45, r: 30, b: 55, l: 80}}
+      legend: {{orientation: 'h', y: 1.08, x: 1.0, xanchor: 'right', yanchor: 'bottom', font: {{size: 12}}}},
+      margin: {{t: 50, r: 30, b: 30, l: 85}}
     }}), {{displayModeBar: false, responsive: true}});
   }} catch(e) {{ console.error('sector mom plot:', e); showEmpty(id); }}
 }})();
