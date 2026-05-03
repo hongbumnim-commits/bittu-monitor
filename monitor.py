@@ -723,7 +723,7 @@ def fetch_foreign_holding_kr():
 
 MAIN_COLS = [
     "date",
-    "kospi", "kosdaq", "samsung", "hynix",
+    "kospi", "kosdaq", "samsung", "hynix", "mu", "sksquare",
     "credit_balance_eok",
     "samsung_ret_pct", "hynix_ret_pct",
     "sp500", "nasdaq", "vix", "nvda", "ust10y", "cor1m",
@@ -768,6 +768,8 @@ def update_data():
     kosdaq = safe("kosdaq", lambda: fetch_fdr("KQ11", "kosdaq"), default=pd.Series(dtype=float, name="kosdaq"))
     samsung = safe("samsung", lambda: fetch_fdr("005930", "samsung"), default=pd.Series(dtype=float, name="samsung"))
     hynix = safe("hynix", lambda: fetch_fdr("000660", "hynix"), default=pd.Series(dtype=float, name="hynix"))
+    mu = safe("mu", lambda: fetch_fdr("MU", "mu"), default=pd.Series(dtype=float, name="mu"))
+    sksquare = safe("sksquare", lambda: fetch_fdr("402340", "sksquare"), default=pd.Series(dtype=float, name="sksquare"))
 
     sp500 = safe("sp500", lambda: fetch_fdr("US500", "sp500"), default=pd.Series(dtype=float, name="sp500"))
     nasdaq = safe("nasdaq", lambda: fetch_fdr("IXIC", "nasdaq"), default=pd.Series(dtype=float, name="nasdaq"))
@@ -785,7 +787,7 @@ def update_data():
     credit_map  = safe("credit",        fetch_credit_balance,   default={})
 
     series_dict = {
-        "kospi": kospi, "kosdaq": kosdaq, "samsung": samsung, "hynix": hynix,
+        "kospi": kospi, "kosdaq": kosdaq, "samsung": samsung, "hynix": hynix, "mu": mu, "sksquare": sksquare,
         "sp500": sp500, "nasdaq": nasdaq, "vix": vix, "nvda": nvda, "ust10y": ust10y,
         "cor1m": cor1m,
         **sectors
@@ -1242,6 +1244,8 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
         "kosdaq_base100": base100("kosdaq"),
         "samsung_base100": base100("samsung"),
         "hynix_base100": base100("hynix"),
+        "mu_base100": base100("mu"),
+        "sksquare_base100": base100("sksquare"),
         "credit": series_connected("credit_balance_eok", min_val=100000, max_daily_jump_pct=15),
         "sp500": sp500,
         "sp500_ma200": ma_series("sp500", 200),
@@ -1886,7 +1890,9 @@ safePlot('c_kr_credit', [
 safePlot('c_kr_semi', [
   {{x: D.dates, y: D.kospi_base100, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#888', width: 1.2, dash: 'dot'}}}},
   {{x: D.dates, y: D.samsung_base100, type: 'scatter', mode: 'lines', name: '삼성전자', connectgaps: true, line: {{color: '#185FA5', width: 2.2}}}},
-  {{x: D.dates, y: D.hynix_base100, type: 'scatter', mode: 'lines', name: 'SK하이닉스', connectgaps: true, line: {{color: '#534AB7', width: 2.2}}}}
+  {{x: D.dates, y: D.hynix_base100, type: 'scatter', mode: 'lines', name: 'SK하이닉스', connectgaps: true, line: {{color: '#534AB7', width: 2.2}}}},
+  {{x: D.dates, y: D.mu_base100, type: 'scatter', mode: 'lines', name: '마이크론', connectgaps: true, line: {{color: '#10B981', width: 2.2}}}},
+  {{x: D.dates, y: D.sksquare_base100, type: 'scatter', mode: 'lines', name: 'SK스퀘어', connectgaps: true, line: {{color: '#DC2626', width: 2.2}}}}
 ], '반도체 누적 추세 (Base 100)', {{yaxis: {{title: 'Base 100'}}}});
 
 safePlot('c_kr_sector', [
