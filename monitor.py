@@ -354,6 +354,7 @@ def fetch_investing_history(url, name, days=LOOKBACK_DAYS):
     except Exception as e:
         print(f"  [warn] investing {name}: {e}")
     return pd.Series(dtype=float, name=name)
+
 def fetch_sector_basket(tickers):
     """섹터 종목 바스켓을 Base 100 누적 추세로 반환."""
     closes = []
@@ -1318,7 +1319,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
         js_data["margin_dates"] = []
         js_data["margin_vals"] = []
 
-    # 2. 한국 전력기기 대표주 Base 100 + 코스피/코스닥 (최근 1년)
+    # 2. 한국 전력기기 대표주 Base 100 + 코스피/코스닥 (최근 3개월)
     kr_power_basket = extras.get("kr_power_basket", {}) or {}
     kr_power_dates = []
     kr_power_series = {}
@@ -1332,7 +1333,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
                     anchor = s
                     break
         if anchor is not None:
-            cutoff = TODAY - dt.timedelta(days=365)
+            cutoff = TODAY - dt.timedelta(days=90)
             anchor = anchor[anchor.index >= cutoff]
             kr_power_dates = [d.strftime("%Y-%m-%d") for d in anchor.index]
             for ticker, s in kr_power_basket.items():
@@ -1345,7 +1346,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     js_data["kr_power_dates"] = kr_power_dates
     js_data["kr_power_series"] = kr_power_series
 
-    # 3. M7 + AVGO + TSM Base 100 + S&P500
+    # 3. M7 + AVGO + TSM Base 100 + S&P500 (최근 3개월)
     m7_basket = extras.get("m7_basket", {}) or {}
     m7_dates = []
     m7_series = {}  # {ticker: [values]}
@@ -1360,7 +1361,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
                     anchor = s
                     break
         if anchor is not None:
-            cutoff = TODAY - dt.timedelta(days=LOOKBACK_DAYS)
+            cutoff = TODAY - dt.timedelta(days=90)
             anchor = anchor[anchor.index >= cutoff]
             m7_dates = [d.strftime("%Y-%m-%d") for d in anchor.index]
             for ticker, s in m7_basket.items():
@@ -1374,7 +1375,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     js_data["m7_dates"] = m7_dates
     js_data["m7_series"] = m7_series
 
-    # 3-2. 한국 조선주 바스켓 Base 100 (최근 1년)
+    # 3-2. 한국 조선주 바스켓 Base 100 (최근 3개월)
     kr_ship_basket = extras.get("kr_ship_basket", {}) or {}
     kr_ship_dates = []
     kr_ship_series = {}
@@ -1388,7 +1389,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
                     anchor = s
                     break
         if anchor is not None:
-            cutoff = TODAY - dt.timedelta(days=365)
+            cutoff = TODAY - dt.timedelta(days=90)
             anchor = anchor[anchor.index >= cutoff]
             kr_ship_dates = [d.strftime("%Y-%m-%d") for d in anchor.index]
             for ticker, s in kr_ship_basket.items():
@@ -1401,7 +1402,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     js_data["kr_ship_dates"] = kr_ship_dates
     js_data["kr_ship_series"] = kr_ship_series
 
-    # 3-3. 미국 주요 지수 Base 100 (SP500, IXIC, RUT, SOX)
+    # 3-3. 미국 주요 지수 Base 100 (최근 3개월)
     us_indices_basket = extras.get("us_indices_basket", {}) or {}
     us_idx_dates = []
     us_idx_series = {}
@@ -1415,7 +1416,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
                     anchor = s
                     break
         if anchor is not None:
-            cutoff = TODAY - dt.timedelta(days=LOOKBACK_DAYS)
+            cutoff = TODAY - dt.timedelta(days=90)
             anchor = anchor[anchor.index >= cutoff]
             us_idx_dates = [d.strftime("%Y-%m-%d") for d in anchor.index]
             for ticker, s in us_indices_basket.items():
@@ -1428,7 +1429,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     js_data["us_idx_dates"] = us_idx_dates
     js_data["us_idx_series"] = us_idx_series
 
-    # 3-4. 스토리지 종목 Base 100 (STX, WDC, SP500, IXIC)
+    # 3-4. 스토리지 종목 Base 100 (최근 3개월)
     storage_basket = extras.get("storage_basket", {}) or {}
     storage_dates = []
     storage_series = {}
@@ -1442,7 +1443,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
                     anchor = s
                     break
         if anchor is not None:
-            cutoff = TODAY - dt.timedelta(days=LOOKBACK_DAYS)
+            cutoff = TODAY - dt.timedelta(days=90)
             anchor = anchor[anchor.index >= cutoff]
             storage_dates = [d.strftime("%Y-%m-%d") for d in anchor.index]
             for ticker, s in storage_basket.items():
@@ -1709,7 +1710,7 @@ safePlot('c_kr_credit', [
   {{x: D.dates, y: D.credit, type: 'scatter', mode: 'lines', name: '신용잔고(억)', yaxis: 'y2', connectgaps: false, line: {{color: '#993C1D', width: 2, dash: 'dash'}}}}
 ], '코스피 vs 신용잔고', {{yaxis: {{title: '코스피'}}, yaxis2: {{title: '잔고(억)', overlaying: 'y', side: 'right'}}}});
 
-// === 코스피 + 코스닥 + 전력기기 대표주 누적 추세 (Base 100, 최근 1년) ===
+// === 코스피 + 코스닥 + 전력기기 대표주 누적 추세 (Base 100) ===
 (function() {{
   const id = 'c_kr_power';
   const el = document.getElementById(id);
@@ -1798,7 +1799,7 @@ safePlot('c_kr_credit', [
   }} catch (e) {{ console.error('kr power plot:', e); showEmpty(id); }}
 }})();
 
-// === 코스피 + 코스닥 + 핵심 조선주 누적 추세 (Base 100, 최근 1년) ===
+// === 코스피 + 코스닥 + 핵심 조선주 누적 추세 (Base 100) ===
 (function() {{
   const id = 'c_kr_ship';
   const el = document.getElementById(id);
