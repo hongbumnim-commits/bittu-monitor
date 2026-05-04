@@ -167,17 +167,11 @@ def fetch_cor1m():
     CBOE 1-Month Implied Correlation Index (^COR1M).
     S&P 500 구성종목 간 내재상관 - '모두 같이 움직일 확률'을 옵션으로 측정.
     높음(60+) = 시스템 공포, 낮음(<20) = 쏠림 극한 (역설적 위험).
-
-    소스 우선순위:
-      1) CBOE 공식 CDN CSV (cdn.cboe.com, VIX_History와 같은 패턴) - 가장 안정적
-      2) FDR의 ^COR1M
-      3) Yahoo chart API (여러 user-agent, 세션 쿠키 시도)
-      4) Investing.com historical
     """
     import urllib.parse
     from io import StringIO
 
-    # 1) CBOE 공식 CDN - 가장 안정적. GitHub IP도 막지 않음.
+    # 1) CBOE 공식 CDN
     cboe_urls = [
         "https://cdn.cboe.com/api/global/us_indices/daily_prices/COR1M_History.csv",
         "https://cdn.cboe.com/api/global/us_indices/daily_prices/COR1M_Historical_Data.csv",
@@ -187,9 +181,7 @@ def fetch_cor1m():
             r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
             if r.status_code != 200 or len(r.text) < 50:
                 continue
-            # CSV 구조: 보통 "DATE,OPEN,HIGH,LOW,CLOSE" 또는 "Date,Close"
             content = r.text
-            # 헤더에 Cboe 경고문구 등이 섞여있을 수 있음 → 실제 헤더 줄 찾기
             lines = content.splitlines()
             header_idx = None
             for i, line in enumerate(lines[:10]):
@@ -200,7 +192,6 @@ def fetch_cor1m():
                 continue
             clean_csv = "\n".join(lines[header_idx:])
             df_cboe = pd.read_csv(StringIO(clean_csv))
-            # 날짜 컬럼 찾기
             date_col = None
             for c in df_cboe.columns:
                 if re.search(r"date", str(c), re.IGNORECASE):
@@ -208,7 +199,6 @@ def fetch_cor1m():
                     break
             if date_col is None:
                 continue
-            # 종가 컬럼 찾기
             close_col = None
             for c in df_cboe.columns:
                 cl = str(c).lower()
@@ -216,10 +206,9 @@ def fetch_cor1m():
                     close_col = c
                     break
             if close_col is None:
-                # 컬럼이 Date와 하나만 있으면 그게 종가
                 other_cols = [c for c in df_cboe.columns if c != date_col]
                 if len(other_cols) >= 1:
-                    close_col = other_cols[-1]  # 마지막 컬럼이 보통 종가
+                    close_col = other_cols[-1]
             if close_col is None:
                 continue
             df_cboe[date_col] = pd.to_datetime(df_cboe[date_col], errors="coerce")
@@ -261,7 +250,7 @@ def fetch_cor1m():
     except Exception as e:
         print(f"  [info] fdr cor1m failed: {e}")
 
-    # 3) Yahoo chart API - 세션 쿠키 + 다양한 user-agent 시도
+    # 3) Yahoo chart API
     end_ts = int(dt.datetime.now(KST).timestamp())
     start_ts = end_ts - LOOKBACK_DAYS * 86400
     user_agents = [
@@ -366,9 +355,7 @@ def fetch_sector_basket(tickers):
     if not closes:
         return pd.Series(dtype=float)
     df = pd.concat(closes, axis=1).ffill().bfill()
-    # 각 종목을 첫 유효값 기준 Base 100으로 정규화 후 평균
     first = df.iloc[0]
-    # 0 또는 NaN이 있는 컬럼 제외
     valid_cols = first[(first > 0) & first.notna()].index
     if len(valid_cols) == 0:
         return pd.Series(dtype=float)
@@ -379,22 +366,12 @@ def fetch_sector_basket(tickers):
 # ================================================================
 # 미국 신용잔고 - FINRA Margin Statistics (월별)
 # ================================================================
-# FINRA Rule 4521에 따라 증권사들이 매월 말일 기준으로 보고
-# 공식 URL: finra.org의 margin-statistics.xlsx (매달 갱신)
-
 FINRA_MARGIN_URLS = [
     "https://www.finra.org/sites/default/files/2021-03/margin-statistics.xlsx",
     "https://www.finra.org/sites/default/files/margin-statistics.xlsx",
 ]
 
-
 def fetch_us_margin_debt():
-    """
-    FINRA 증권사 신용잔고 (Margin Debt) - 월별 데이터.
-    단위: 백만달러 (원본) → 십억달러로 변환
-    Returns:
-        dict {date(월말): debt_bil_usd}
-    """
     from io import BytesIO
 
     def _parse_finra_date(val):
@@ -428,7 +405,6 @@ def fetch_us_margin_debt():
     def _parse_sheet(df_raw):
         if df_raw is None or df_raw.empty:
             return {}
-        # 헤더 행 탐지
         for header_row in range(min(40, len(df_raw))):
             row_txt = ' '.join([str(v) for v in df_raw.iloc[header_row].values if pd.notna(v)]).lower()
             if not row_txt:
@@ -462,7 +438,6 @@ def fetch_us_margin_debt():
                             out[d] = round(v / 1000, 1)
                     if len(out) >= 6:
                         return out
-        # 열 추론 fallback
         out = {}
         first_col = df_raw.columns[0]
         for c in df_raw.columns[1:]:
@@ -498,7 +473,6 @@ def fetch_us_margin_debt():
         except Exception as e:
             print(f"  [warn] finra {url.split('/')[-1]}: {e}")
 
-    # YCharts fallback
     try:
         r = requests.get('https://ycharts.com/indicators/finra_margin_debt', headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
         if r.status_code == 200:
@@ -634,13 +608,14 @@ STORAGE_STOCKS = {
     "SP500": "S&P500",
     "IXIC":  "나스닥",
     "STX":   "씨게이트 STX",
-    "SDNK":  "샌디스크 SDNK",
+    "SNDK":  "샌디스크 SNDK",
 }
 
 
 def fetch_storage_basket():
-    """씨게이트·SDNK + S&P500 + 나스닥 Base 100 바스켓."""
-    SYMBOL_MAP = {"SP500": "US500", "IXIC": "IXIC", "STX": "STX", "SDNK": "SDNK"}
+    """씨게이트·SNDK + S&P500 + 나스닥 Base 100 바스켓."""
+    # 이제 실제 상장된 SNDK를 직접 호출합니다.
+    SYMBOL_MAP = {"SP500": "US500", "IXIC": "IXIC", "STX": "STX", "SNDK": "SNDK"}
     result = {}
     for ticker, _ in STORAGE_STOCKS.items():
         source = SYMBOL_MAP.get(ticker, ticker)
@@ -724,7 +699,7 @@ def fetch_foreign_holding_kr():
 
 MAIN_COLS = [
     "date",
-    "kospi", "kosdaq", "samsung", "hynix", "mu", "sksquare", "sdnk",
+    "kospi", "kosdaq", "samsung", "hynix", "mu", "sksquare", "sndk",
     "credit_balance_eok",
     "samsung_ret_pct", "hynix_ret_pct",
     "sp500", "nasdaq", "vix", "nvda", "ust10y", "cor1m",
@@ -771,7 +746,8 @@ def update_data():
     hynix = safe("hynix", lambda: fetch_fdr("000660", "hynix"), default=pd.Series(dtype=float, name="hynix"))
     mu = safe("mu", lambda: fetch_fdr("MU", "mu"), default=pd.Series(dtype=float, name="mu"))
     sksquare = safe("sksquare", lambda: fetch_fdr("402340", "sksquare"), default=pd.Series(dtype=float, name="sksquare"))
-    sdnk = safe("sdnk", lambda: fetch_fdr("SDNK", "sdnk"), default=pd.Series(dtype=float, name="sdnk"))
+    # 이제 진짜 SNDK 티커로 데이터를 수집합니다.
+    sndk = safe("sndk", lambda: fetch_fdr("SNDK", "sndk"), default=pd.Series(dtype=float, name="sndk"))
 
     sp500 = safe("sp500", lambda: fetch_fdr("US500", "sp500"), default=pd.Series(dtype=float, name="sp500"))
     nasdaq = safe("nasdaq", lambda: fetch_fdr("IXIC", "nasdaq"), default=pd.Series(dtype=float, name="nasdaq"))
@@ -789,7 +765,7 @@ def update_data():
     credit_map  = safe("credit",        fetch_credit_balance,   default={})
 
     series_dict = {
-        "kospi": kospi, "kosdaq": kosdaq, "samsung": samsung, "hynix": hynix, "mu": mu, "sksquare": sksquare, "sdnk": sdnk,
+        "kospi": kospi, "kosdaq": kosdaq, "samsung": samsung, "hynix": hynix, "mu": mu, "sksquare": sksquare, "sndk": sndk,
         "sp500": sp500, "nasdaq": nasdaq, "vix": vix, "nvda": nvda, "ust10y": ust10y,
         "cor1m": cor1m,
         **sectors
@@ -1283,7 +1259,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
         "hynix_base100_3m": base100_custom(df_3m, "hynix"),
         "mu_base100_3m": base100_custom(df_3m, "mu"),
         "sksquare_base100_3m": base100_custom(df_3m, "sksquare"),
-        "sdnk_base100_3m": base100_custom(df_3m, "sdnk"),  # 샌디스크
+        "sndk_base100_3m": base100_custom(df_3m, "sndk"),  # 샌디스크
         "sec_반도체_3m": base100_custom(df_3m, "sec_반도체"),
         "sec_방산조선_3m": base100_custom(df_3m, "sec_방산조선"),
         "sec_바이오_3m": base100_custom(df_3m, "sec_바이오"),
@@ -1918,7 +1894,7 @@ safePlot('c_kr_semi', [
   {{x: D.dates_3m, y: D.samsung_base100_3m, type: 'scatter', mode: 'lines', name: '삼성전자', connectgaps: true, line: {{color: '#185FA5', width: 2.2}}}},
   {{x: D.dates_3m, y: D.hynix_base100_3m, type: 'scatter', mode: 'lines', name: 'SK하이닉스', connectgaps: true, line: {{color: '#534AB7', width: 2.2}}}},
   {{x: D.dates_3m, y: D.mu_base100_3m, type: 'scatter', mode: 'lines', name: '마이크론', connectgaps: true, line: {{color: '#10B981', width: 2.2}}}},
-  {{x: D.dates_3m, y: D.sdnk_base100_3m, type: 'scatter', mode: 'lines', name: 'SDNK(샌디스크)', connectgaps: true, line: {{color: '#F59E0B', width: 2.2}}}},
+  {{x: D.dates_3m, y: D.sndk_base100_3m, type: 'scatter', mode: 'lines', name: 'SNDK(샌디스크)', connectgaps: true, line: {{color: '#F59E0B', width: 2.2}}}},
   {{x: D.dates_3m, y: D.sksquare_base100_3m, type: 'scatter', mode: 'lines', name: 'SK스퀘어', connectgaps: true, line: {{color: '#DC2626', width: 2.2}}}}
 ], '반도체 누적 추세 (Base 100, 최근 3개월)', {{yaxis: {{title: 'Base 100'}}}});
 
@@ -1932,7 +1908,7 @@ safePlot('c_kr_sector', [
   {{x: D.dates_3m, y: D.sec_전기_3m, type: 'scatter', mode: 'lines', name: '전기', connectgaps: false, line: {{color: '#DC2626', width: 2.0}}}}
 ], '업종 바구니 누적 추세 (Base 100, 최근 3개월)', {{yaxis: {{title: 'Base 100'}}}});
 
-// === 스토리지 종목 누적 추세 (STX, SDNK + S&P500, 나스닥 Base 100) ===
+// === 스토리지 종목 누적 추세 (STX, SNDK + S&P500, 나스닥 Base 100) ===
 (function() {{
   const id = 'c_us_storage';
   const el = document.getElementById(id);
@@ -1946,15 +1922,15 @@ safePlot('c_kr_sector', [
       'SP500': '#6B7280',
       'IXIC':  '#1E3A8A',
       'STX':   '#DC2626',
-      'SDNK':  '#F59E0B'
+      'SNDK':  '#F59E0B'
     }};
     const labelMap = {{
       'SP500': 'S&P500',
       'IXIC':  '나스닥',
       'STX':   '씨게이트 STX',
-      'SDNK':  '샌디스크 SDNK'
+      'SNDK':  '샌디스크 SNDK'
     }};
-    const order = ['SP500', 'IXIC', 'STX', 'SDNK'];
+    const order = ['SP500', 'IXIC', 'STX', 'SNDK'];
     const traces = [];
     order.forEach(t => {{
       const vals = D.storage_series[t];
@@ -2006,7 +1982,7 @@ safePlot('c_kr_sector', [
     }});
 
     Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
-      title: {{text: '씨게이트 STX + 샌디스크 SDNK vs 나스닥 + S&P500 누적 추세 (Base 100)', font: {{size: 16}}}},
+      title: {{text: '씨게이트 STX + 샌디스크 SNDK vs 나스닥 + S&P500 누적 추세 (Base 100)', font: {{size: 16}}}},
       yaxis: {{title: {{text: 'Base 100', font: {{size: 13}}}}, gridcolor: '#F3F4F6'}},
       xaxis: {{gridcolor: '#F3F4F6'}},
       legend: {{orientation: 'h', y: -0.08, x: 0.5, xanchor: 'center', font: {{size: 12}}}},
