@@ -634,13 +634,13 @@ STORAGE_STOCKS = {
     "SP500": "S&P500",
     "IXIC":  "나스닥",
     "STX":   "씨게이트 STX",
-    "WDC":   "WDC",
+    "SDNK":   "샌디스크 SDNK",
 }
 
 
 def fetch_storage_basket():
-    """씨게이트·WDC + S&P500 + 나스닥 Base 100 바스켓."""
-    SYMBOL_MAP = {"SP500": "US500", "IXIC": "IXIC", "STX": "STX", "WDC": "WDC"}
+    """씨게이트·SDNK + S&P500 + 나스닥 Base 100 바스켓."""
+    SYMBOL_MAP = {"SP500": "US500", "IXIC": "IXIC", "STX": "STX", "SDNK": "SDNK"}
     result = {}
     for ticker, _ in STORAGE_STOCKS.items():
         source = SYMBOL_MAP.get(ticker, ticker)
@@ -724,7 +724,7 @@ def fetch_foreign_holding_kr():
 
 MAIN_COLS = [
     "date",
-    "kospi", "kosdaq", "samsung", "hynix", "mu", "sksquare", "wdc",
+    "kospi", "kosdaq", "samsung", "hynix", "mu", "sksquare", "sdnk",
     "credit_balance_eok",
     "samsung_ret_pct", "hynix_ret_pct",
     "sp500", "nasdaq", "vix", "nvda", "ust10y", "cor1m",
@@ -771,7 +771,7 @@ def update_data():
     hynix = safe("hynix", lambda: fetch_fdr("000660", "hynix"), default=pd.Series(dtype=float, name="hynix"))
     mu = safe("mu", lambda: fetch_fdr("MU", "mu"), default=pd.Series(dtype=float, name="mu"))
     sksquare = safe("sksquare", lambda: fetch_fdr("402340", "sksquare"), default=pd.Series(dtype=float, name="sksquare"))
-    wdc = safe("wdc", lambda: fetch_fdr("WDC", "wdc"), default=pd.Series(dtype=float, name="wdc"))
+    sdnk = safe("sdnk", lambda: fetch_fdr("SDNK", "sdnk"), default=pd.Series(dtype=float, name="sdnk"))
 
     sp500 = safe("sp500", lambda: fetch_fdr("US500", "sp500"), default=pd.Series(dtype=float, name="sp500"))
     nasdaq = safe("nasdaq", lambda: fetch_fdr("IXIC", "nasdaq"), default=pd.Series(dtype=float, name="nasdaq"))
@@ -789,7 +789,7 @@ def update_data():
     credit_map  = safe("credit",        fetch_credit_balance,   default={})
 
     series_dict = {
-        "kospi": kospi, "kosdaq": kosdaq, "samsung": samsung, "hynix": hynix, "mu": mu, "sksquare": sksquare, "wdc": wdc,
+        "kospi": kospi, "kosdaq": kosdaq, "samsung": samsung, "hynix": hynix, "mu": mu, "sksquare": sksquare, "sdnk": sdnk,
         "sp500": sp500, "nasdaq": nasdaq, "vix": vix, "nvda": nvda, "ust10y": ust10y,
         "cor1m": cor1m,
         **sectors
@@ -1283,7 +1283,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
         "hynix_base100_3m": base100_custom(df_3m, "hynix"),
         "mu_base100_3m": base100_custom(df_3m, "mu"),
         "sksquare_base100_3m": base100_custom(df_3m, "sksquare"),
-        "wdc_base100_3m": base100_custom(df_3m, "wdc"),  # 샌디스크 프록시
+        "sdnk_base100_3m": base100_custom(df_3m, "sdnk"),  # 샌디스크
         "sec_반도체_3m": base100_custom(df_3m, "sec_반도체"),
         "sec_방산조선_3m": base100_custom(df_3m, "sec_방산조선"),
         "sec_바이오_3m": base100_custom(df_3m, "sec_바이오"),
@@ -1912,13 +1912,13 @@ safePlot('c_kr_credit', [
   }} catch (e) {{ console.error('kr ship plot:', e); showEmpty(id); }}
 }})();
 
-// --- 업데이트된 차트: 반도체 누적 추세 (3개월 + 샌디스크 프록시 WDC) ---
+// --- 업데이트된 차트: 반도체 누적 추세 (3개월 + 샌디스크) ---
 safePlot('c_kr_semi', [
   {{x: D.dates_3m, y: D.kospi_base100_3m, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#888', width: 1.2, dash: 'dot'}}}},
   {{x: D.dates_3m, y: D.samsung_base100_3m, type: 'scatter', mode: 'lines', name: '삼성전자', connectgaps: true, line: {{color: '#185FA5', width: 2.2}}}},
   {{x: D.dates_3m, y: D.hynix_base100_3m, type: 'scatter', mode: 'lines', name: 'SK하이닉스', connectgaps: true, line: {{color: '#534AB7', width: 2.2}}}},
   {{x: D.dates_3m, y: D.mu_base100_3m, type: 'scatter', mode: 'lines', name: '마이크론', connectgaps: true, line: {{color: '#10B981', width: 2.2}}}},
-  {{x: D.dates_3m, y: D.wdc_base100_3m, type: 'scatter', mode: 'lines', name: 'WDC(샌디스크)', connectgaps: true, line: {{color: '#F59E0B', width: 2.2}}}},
+  {{x: D.dates_3m, y: D.sdnk_base100_3m, type: 'scatter', mode: 'lines', name: 'SDNK(샌디스크)', connectgaps: true, line: {{color: '#F59E0B', width: 2.2}}}},
   {{x: D.dates_3m, y: D.sksquare_base100_3m, type: 'scatter', mode: 'lines', name: 'SK스퀘어', connectgaps: true, line: {{color: '#DC2626', width: 2.2}}}}
 ], '반도체 누적 추세 (Base 100, 최근 3개월)', {{yaxis: {{title: 'Base 100'}}}});
 
@@ -1932,7 +1932,7 @@ safePlot('c_kr_sector', [
   {{x: D.dates_3m, y: D.sec_전기_3m, type: 'scatter', mode: 'lines', name: '전기', connectgaps: false, line: {{color: '#DC2626', width: 2.0}}}}
 ], '업종 바구니 누적 추세 (Base 100, 최근 3개월)', {{yaxis: {{title: 'Base 100'}}}});
 
-// === 스토리지 종목 누적 추세 (STX, WDC + S&P500, 나스닥 Base 100) ===
+// === 스토리지 종목 누적 추세 (STX, SDNK + S&P500, 나스닥 Base 100) ===
 (function() {{
   const id = 'c_us_storage';
   const el = document.getElementById(id);
@@ -1946,15 +1946,15 @@ safePlot('c_kr_sector', [
       'SP500': '#6B7280',
       'IXIC':  '#1E3A8A',
       'STX':   '#DC2626',
-      'WDC':   '#F59E0B'
+      'SDNK':  '#F59E0B'
     }};
     const labelMap = {{
       'SP500': 'S&P500',
       'IXIC':  '나스닥',
       'STX':   '씨게이트 STX',
-      'WDC':   'WDC'
+      'SDNK':  '샌디스크 SDNK'
     }};
-    const order = ['SP500', 'IXIC', 'STX', 'WDC'];
+    const order = ['SP500', 'IXIC', 'STX', 'SDNK'];
     const traces = [];
     order.forEach(t => {{
       const vals = D.storage_series[t];
@@ -2006,7 +2006,7 @@ safePlot('c_kr_sector', [
     }});
 
     Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
-      title: {{text: '씨게이트 STX + WDC vs 나스닥 + S&P500 누적 추세 (Base 100)', font: {{size: 16}}}},
+      title: {{text: '씨게이트 STX + 샌디스크 SDNK vs 나스닥 + S&P500 누적 추세 (Base 100)', font: {{size: 16}}}},
       yaxis: {{title: {{text: 'Base 100', font: {{size: 13}}}}, gridcolor: '#F3F4F6'}},
       xaxis: {{gridcolor: '#F3F4F6'}},
       legend: {{orientation: 'h', y: -0.08, x: 0.5, xanchor: 'center', font: {{size: 12}}}},
@@ -2323,39 +2323,3 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
 </script>
 </body>
 </html>
-"""
-    (DOCS_DIR / "index.html").write_text(html, encoding="utf-8")
-    print("  dashboard written")
-
-
-def main():
-    try:
-        df, extras = update_data()
-    except Exception as e:
-        print(f"[error] update_data fatal: {e}")
-        import traceback; traceback.print_exc()
-        df = load_history()
-        extras = {"us_margin_debt": {}, "m7_basket": {}, "fed_debt": pd.Series(dtype=float), "krwusd": pd.Series(dtype=float), "cnn_fg": pd.Series(dtype=float)}
-
-    signals = compute_signals(df, extras)
-    regime_kr = compute_regime(df["kospi"]) if not df.empty else {}
-    regime_us = compute_regime(df["sp500"]) if not df.empty else {}
-
-    print("=== Signals ===")
-    print(json.dumps(signals, indent=2, ensure_ascii=False, default=str))
-    print("=== Regime KR ===")
-    print(json.dumps(regime_kr, indent=2, ensure_ascii=False, default=str))
-    print("=== Regime US ===")
-    print(json.dumps(regime_us, indent=2, ensure_ascii=False, default=str))
-
-    try:
-        render_dashboard(df, signals, regime_kr, regime_us, extras)
-    except Exception as e:
-        print(f"[error] render_dashboard: {e}")
-        import traceback; traceback.print_exc()
-
-    print("Done.")
-
-
-if __name__ == "__main__":
-    main()
