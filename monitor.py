@@ -634,7 +634,7 @@ STORAGE_STOCKS = {
     "SP500": "S&P500",
     "IXIC":  "나스닥",
     "STX":   "씨게이트 STX",
-    "SDNK":   "샌디스크 SDNK",
+    "SDNK":  "샌디스크 SDNK",
 }
 
 
@@ -2323,3 +2323,39 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
 </script>
 </body>
 </html>
+"""
+    (DOCS_DIR / "index.html").write_text(html, encoding="utf-8")
+    print("  dashboard written")
+
+
+def main():
+    try:
+        df, extras = update_data()
+    except Exception as e:
+        print(f"[error] update_data fatal: {e}")
+        import traceback; traceback.print_exc()
+        df = load_history()
+        extras = {"us_margin_debt": {}, "m7_basket": {}, "fed_debt": pd.Series(dtype=float), "krwusd": pd.Series(dtype=float), "cnn_fg": pd.Series(dtype=float)}
+
+    signals = compute_signals(df, extras)
+    regime_kr = compute_regime(df["kospi"]) if not df.empty else {}
+    regime_us = compute_regime(df["sp500"]) if not df.empty else {}
+
+    print("=== Signals ===")
+    print(json.dumps(signals, indent=2, ensure_ascii=False, default=str))
+    print("=== Regime KR ===")
+    print(json.dumps(regime_kr, indent=2, ensure_ascii=False, default=str))
+    print("=== Regime US ===")
+    print(json.dumps(regime_us, indent=2, ensure_ascii=False, default=str))
+
+    try:
+        render_dashboard(df, signals, regime_kr, regime_us, extras)
+    except Exception as e:
+        print(f"[error] render_dashboard: {e}")
+        import traceback; traceback.print_exc()
+
+    print("Done.")
+
+
+if __name__ == "__main__":
+    main()
