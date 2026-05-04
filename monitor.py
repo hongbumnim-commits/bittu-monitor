@@ -605,17 +605,19 @@ def fetch_us_indices_basket():
 
 
 STORAGE_STOCKS = {
-    "SP500": "S&P500",
-    "IXIC":  "나스닥",
-    "STX":   "씨게이트 STX",
-    "SNDK":  "샌디스크 SNDK",
+    "SP500":     "S&P500",
+    "IXIC":      "나스닥",
+    "STX":       "씨게이트 STX",
+    "SNDK":      "샌디스크 SNDK",
+    "SKSQUARE":  "SK스퀘어",
+    "BE":        "블룸에너지 BE",
 }
 
 
 def fetch_storage_basket():
     """씨게이트·SNDK + S&P500 + 나스닥 Base 100 바스켓."""
     # 이제 실제 상장된 SNDK를 직접 호출합니다.
-    SYMBOL_MAP = {"SP500": "US500", "IXIC": "IXIC", "STX": "STX", "SNDK": "SNDK"}
+    SYMBOL_MAP = {"SP500": "US500", "IXIC": "IXIC", "STX": "STX", "SNDK": "SNDK", "SKSQUARE": "402340", "BE": "BE"}
     result = {}
     for ticker, _ in STORAGE_STOCKS.items():
         source = SYMBOL_MAP.get(ticker, ticker)
@@ -1919,18 +1921,22 @@ safePlot('c_kr_sector', [
   }}
   try {{
     const colorMap = {{
-      'SP500': '#6B7280',
-      'IXIC':  '#1E3A8A',
-      'STX':   '#DC2626',
-      'SNDK':  '#F59E0B'
+      'SP500':    '#6B7280',
+      'IXIC':     '#1E3A8A',
+      'STX':      '#DC2626',
+      'SNDK':     '#F59E0B',
+      'SKSQUARE': '#7C3AED',
+      'BE':       '#10B981'
     }};
     const labelMap = {{
-      'SP500': 'S&P500',
-      'IXIC':  '나스닥',
-      'STX':   '씨게이트 STX',
-      'SNDK':  '샌디스크 SNDK'
+      'SP500':    'S&P500',
+      'IXIC':     '나스닥',
+      'STX':      '씨게이트 STX',
+      'SNDK':     '샌디스크 SNDK',
+      'SKSQUARE': 'SK스퀘어',
+      'BE':       '블룸에너지 BE'
     }};
-    const order = ['SP500', 'IXIC', 'STX', 'SNDK'];
+    const order = ['SP500', 'IXIC', 'STX', 'SNDK', 'SKSQUARE', 'BE'];
     const traces = [];
     order.forEach(t => {{
       const vals = D.storage_series[t];
@@ -1965,7 +1971,7 @@ safePlot('c_kr_sector', [
       .filter(x => x.last !== undefined && x.last !== null)
       .sort((a, b) => b.last - a.last);
 
-    const lineHeight = 0.05;
+    const lineHeight = 0.038;
     const boxTop = 0.985;
     const boxLeft = 0.012;
     const rankAnnotations = [];
@@ -1977,12 +1983,12 @@ safePlot('c_kr_sector', [
         xanchor: 'left', yanchor: 'top',
         align: 'left', showarrow: false,
         text: '<b>' + (i + 1) + '위</b> ' + x.name + '<b> ' + x.last.toFixed(1) + '</b>',
-        font: {{size: 15, color: color, family: 'system-ui'}}
+        font: {{size: 14, color: color, family: 'system-ui'}}
       }});
     }});
 
     Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
-      title: {{text: '씨게이트 STX + 샌디스크 SNDK vs 나스닥 + S&P500 누적 추세 (Base 100)', font: {{size: 16}}}},
+      title: {{text: '씨게이트 STX + 샌디스크 SNDK + SK스퀘어 + 블룸에너지 vs 나스닥 + S&P500 누적 추세 (Base 100)', font: {{size: 15}}}},
       yaxis: {{title: {{text: 'Base 100', font: {{size: 13}}}}, gridcolor: '#F3F4F6'}},
       xaxis: {{gridcolor: '#F3F4F6'}},
       legend: {{orientation: 'h', y: -0.08, x: 0.5, xanchor: 'center', font: {{size: 12}}}},
