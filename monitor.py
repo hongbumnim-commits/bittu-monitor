@@ -156,24 +156,23 @@ def fetch_macro_us():
 
 
 def fetch_macro_kr():
-    """한국 핵심 매크로 FRED 시리즈. {name: pd.Series}. 대체 코드 포함."""
-    # primary → fallback 순서
+    """한국 핵심 매크로 FRED + FDR 시리즈. {name: pd.Series}"""
     targets = [
-        (["IRSTCI01KRM156N", "KORREC1Q156N"], "kr_base_rate"),
-        (["KORCPIALLAINMEI", "KORCPIALLMINMEI"], "kr_cpi_lvl"),
-        (["LRUNTTTTKOM156S", "LRUNTTTTKOQ156S"], "kr_unrate"),
-        (["IRDNKR01KRM156N", "IRLTLT01KRM156N"], "kr_10y"),
+        (["IRSTCI01KRM156N"], "kr_base_rate"),           # 한국 기준금리 (월간 %)
+        (["KORCPIALLAINMEI", "KORCPIALLMINMEI"], "kr_cpi_lvl"),  # 한국 CPI 레벨
+        (["LRHUTTTTKOR156S", "LRUNTTTTKOM156S"], "kr_unrate"),   # 한국 실업률 (ILO)
+        (["IRLTLT01KRM156N", "IRDNKR01KRM156N"], "kr_10y"),      # 한국 10Y (OECD)
     ]
     result = {}
     for codes, name in targets:
         for sid in codes:
-            s = fetch_fred_series(sid, name, days=LOOKBACK_DAYS * 8)
-            if not s.empty:
+            s = fetch_fred_series(sid, name, days=LOOKBACK_DAYS * 10)
+            if not s.empty and len(s) > 5:
                 result[name] = s
-                print(f"    kr {name} <- {sid}: {len(s)} rows")
+                print(f"    kr {name} <- {sid}: {len(s)} rows, latest {float(s.iloc[-1]):.2f}")
                 break
         else:
-            print(f"    [warn] kr {name}: all series empty")
+            print(f"    [warn] kr {name}: all FRED series empty — skipping")
     print(f"  macro_kr: {len(result)}/{len(targets)} series")
     return result
 
@@ -2453,60 +2452,29 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
 
 
 // ============================================================
-// 📡 MACRO TAB — chart rendering v2 (신호등 + 구간 밴드)
+// 📡 MACRO TAB v3 — 신호등 + 구간 밴드 + 단위 수정
 // ============================================================
 (function(){{
-  // ── 헬퍼 ──────────────────────────────────────────────────────
+  // ── 헬퍼 ─────────────────────────────────────────────────────
   function gv(k){{ return D['m_'+k]||{{dates:[],vals:[]}}; }}
   function gkv(k){{ return D['m_kr_'+k]||{{dates:[],vals:[]}}; }}
-  function hasV(a){{ return Array.isArray(a)&&a.some(function(v){{return v!==null&&v!==undefined&&!isNaN(v);}}); }}
-  function lat(arr){{ var f=arr.filter(function(v){{return v!==null&&!isNaN(v);}}); return f.length?f[f.length-1]:null; }}
+  function hasV(a){{ return Array.isArray(a)&&a.some(function(v){{return v!==null&&!isNaN(v);}}); }}
+  function lat(arr){{ var f=(arr||[]).filter(function(v){{return v!==null&&!isNaN(v);}}); return f.length?f[f.length-1]:null; }}
   function fv(v,dec){{ return (v===null||v===undefined||isNaN(v))?'N/A':Number(v).toFixed(dec===undefined?2:dec); }}
 
-  // 신호등 레이블 + 이모지
-  function sig(v, thresholds, labels, invert) {{
-    // thresholds: [warn, danger]  invert: 낮을수록 위험(실업률 제외 기본 false)
-    if(v===null) return {{emoji:'⚪',label:'데이터없음',color:'#aaa'}};
-    if(!invert) {{
-      if(v>=thresholds[1]) return {{emoji:'🔴',label:labels[2]||'위험',color:'#E24B4A'}};
-      if(v>=thresholds[0]) return {{emoji:'🟡',label:labels[1]||'주의',color:'#BA7517'}};
-      return {{emoji:'🟢',label:labels[0]||'안정',color:'#1D9E75'}};
-    }} else {{
-      if(v<=thresholds[1]) return {{emoji:'🔴',label:labels[2]||'위험',color:'#E24B4A'}};
-      if(v<=thresholds[0]) return {{emoji:'🟡',label:labels[1]||'주의',color:'#BA7517'}};
-      return {{emoji:'🟢',label:labels[0]||'안정',color:'#1D9E75'}};
-    }}
+  function sig(v,low,high,labels){{
+    /* low=주의 기준, high=위험 기준 */
+    if(v===null) return {{e:'⚪',l:'데이터없음',c:'#aaa'}};
+    if(v>=high) return {{e:'🔴',l:labels[2]||'위험',c:'#E24B4A'}};
+    if(v>=low)  return {{e:'🟡',l:labels[1]||'주의',c:'#BA7517'}};
+    return {{e:'🟢',l:labels[0]||'안정',c:'#1D9E75'}};
   }}
-
-  // 신호등 텍스트 생성
-  function stl(label, value, unit, thr, labels, invert) {{
-    var lv = lat(value);
-    var s  = sig(lv, thr, labels, invert);
-    var vs = lv===null?'N/A':fv(lv)+(unit||'');
-    return label+'  '+vs+'  '+s.emoji+' '+s.label;
-  }}
-
-  // 구간 밴드 shapes
-  function bands(yRanges) {{
-    // yRanges: [{y0,y1,color}]
-    return yRanges.map(function(b){{
-      return {{type:'rect',xref:'paper',x0:0,x1:1,y0:b.y0,y1:b.y1,
-              fillcolor:b.color,line:{{width:0}}}};
-    }});
-  }}
-  // 기준선 shapes
-  function hlines(ys) {{
-    return ys.map(function(item){{
-      return {{type:'line',xref:'paper',x0:0,x1:1,y0:item.y,y1:item.y,
-              line:{{color:item.color||'#bbb',width:1,dash:item.dash||'dot'}}}};
-    }});
-  }}
-  // annotations for right-side labels
-  function hlabels(ys) {{
-    return ys.map(function(item){{
-      return {{xref:'paper',yref:'y',x:1.01,y:item.y,text:item.text,
-              showarrow:false,font:{{size:10,color:item.color||'#888'}},xanchor:'left'}};
-    }});
+  function sigInv(v,high,low,labels){{
+    /* 낮을수록 위험 버전 */
+    if(v===null) return {{e:'⚪',l:'데이터없음',c:'#aaa'}};
+    if(v<=low)  return {{e:'🔴',l:labels[2]||'위험',c:'#E24B4A'}};
+    if(v<=high) return {{e:'🟡',l:labels[1]||'주의',c:'#BA7517'}};
+    return {{e:'🟢',l:labels[0]||'안정',c:'#1D9E75'}};
   }}
 
   function ln(x,y,name,color,dash){{
@@ -2515,19 +2483,40 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
       hovertemplate:'%{{x}}<br>%{{y:.2f}}<extra></extra>'}};
   }}
   function ar(x,y,name,color){{
-    var rc=color.replace('rgb(','rgba(').replace(')',',0.15)');
+    var rc=color.replace('rgb(','rgba(').replace(')',',0.14)');
     return {{x:x,y:y,name:name,type:'scatter',mode:'lines',connectgaps:true,fill:'tozeroy',
       line:{{color:color,width:2.0}},fillcolor:rc,
       hovertemplate:'%{{x}}<br>%{{y:.2f}}<extra></extra>'}};
   }}
 
-  var BM = {{t:48,r:92,b:36,l:58}};
+  // 가로선 shapes
+  function hl(ys){{
+    return ys.map(function(h){{
+      return {{type:'line',xref:'paper',x0:0,x1:1,y0:h.y,y1:h.y,
+        line:{{color:h.c||'#bbb',width:1,dash:h.d||'dot'}}}};
+    }});
+  }}
+  // 구간 밴드 shapes
+  function bd(bs){{
+    return bs.map(function(b){{
+      return {{type:'rect',xref:'paper',x0:0,x1:1,y0:b.y0,y1:b.y1,
+        fillcolor:b.c,line:{{width:0}}}};
+    }});
+  }}
+  // 오른쪽 레이블
+  function rl(ys){{
+    return ys.map(function(h){{
+      return {{xref:'paper',yref:'y',x:1.01,y:h.y,text:h.t,showarrow:false,
+        font:{{size:10,color:h.c||'#888'}},xanchor:'left'}};
+    }});
+  }}
 
+  var BM = {{t:50,r:95,b:36,l:58}};
   function mplt(id,traces,title,layout){{
     var el=document.getElementById(id);
     if(!el) return;
     var valid=(traces||[]).filter(function(t){{return hasV(t.y);}});
-    if(!valid.length){{showEmpty(id,title+' — 데이터 수집 중 (FRED)');return;}}
+    if(!valid.length){{showEmpty(id,title+' — FRED 데이터 수집 중');return;}}
     try{{
       Plotly.newPlot(id,valid,
         Object.assign({{}},base,{{title:{{text:title,font:{{size:13}}}},margin:BM}},layout||{{}}),
@@ -2535,65 +2524,62 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
     }}catch(e){{console.error(id,e);showEmpty(id);}}
   }}
 
-  // ── 1. 국채 2Y + 10Y ──────────────────────────────────────────
+  // ── 1. 국채 2Y + 10Y ─────────────────────────────────────────
   (function(){{
-    var t2=gv('ust2y'), t10d=D.dates, t10v=D.ust10y;
-    var l2=lat(t2.vals), l10=lat(t10v||[]);
-    // 신호등: 10년물 4.5% 이상 위험, 4.0% 주의
-    var s10=sig(l10,[4.0,4.5],['저금리·완화','주의·긴축우려','위험·긴축충격']);
-    var title='미국 국채금리   2년물 '+fv(l2)+'%  /  10년물 '+fv(l10)+'%  '+s10.emoji+' '+s10.label;
-    var traces=[ln(t2.dates,t2.vals,'2년물','#E24B4A')];
-    if(hasV(t10v)) traces.push(ln(t10d,t10v,'10년물','#185FA5','dash'));
-    mplt('m_rate_curve',traces,title,{{
-      yaxis:{{title:'금리 (%)',ticksuffix:'%',gridcolor:'#F3F4F6'}},
-      shapes:hlines([
-        {{y:2.0,color:'#1D9E75',dash:'dot'}},
-        {{y:4.0,color:'#BA7517',dash:'dot'}},
-        {{y:4.5,color:'#E24B4A',dash:'dot'}},
-        {{y:5.0,color:'#8B0000',dash:'dot'}}
-      ]).concat(bands([
-        {{y0:0,y1:2.0,color:'rgba(29,158,117,0.05)'}},
-        {{y0:2.0,y1:4.0,color:'rgba(255,255,255,0)'}},
-        {{y0:4.0,y1:4.5,color:'rgba(186,117,23,0.06)'}},
-        {{y0:4.5,y1:99,color:'rgba(226,75,74,0.07)'}}
-      ])),
-      annotations:hlabels([
-        {{y:2.0,text:'저금리(2%)',color:'#1D9E75'}},
-        {{y:4.0,text:'주의(4%)',color:'#BA7517'}},
-        {{y:4.5,text:'위험(4.5%)',color:'#E24B4A'}},
-        {{y:5.0,text:'충격(5%)',color:'#8B0000'}}
-      ])
-    }});
+    var t2=gv('ust2y'), l2=lat(t2.vals);
+    var l10=lat(D.ust10y||[]);
+    var s=sig(l10,4.0,4.5,['완화·중립','주의 (긴축 부담)','위험 (성장주 압박)']);
+    mplt('m_rate_curve',
+      [ln(t2.dates,t2.vals,'2년물','#E24B4A'),
+       ln(D.dates,D.ust10y,'10년물','#185FA5','dash')],
+      '미국 국채금리   2년물 '+fv(l2)+'%  /  10년물 '+fv(l10)+'%   '+s.e+' '+s.l,
+      {{yaxis:{{title:'금리 (%)',ticksuffix:'%',gridcolor:'#F3F4F6'}},
+        shapes:bd([
+          {{y0:0,y1:2.0,c:'rgba(29,158,117,0.05)'}},
+          {{y0:4.0,y1:4.5,c:'rgba(186,117,23,0.07)'}},
+          {{y0:4.5,y1:99,c:'rgba(226,75,74,0.08)'}}
+        ]).concat(hl([
+          {{y:2.0,c:'#1D9E75'}},{{y:4.0,c:'#BA7517'}},
+          {{y:4.5,c:'#E24B4A'}},{{y:5.0,c:'#8B0000'}}
+        ])),
+        annotations:rl([
+          {{y:2.0,t:'저금리(2%)',c:'#1D9E75'}},{{y:4.0,t:'주의(4%)',c:'#BA7517'}},
+          {{y:4.5,t:'위험(4.5%)',c:'#E24B4A'}},{{y:5.0,t:'충격(5%)',c:'#8B0000'}}
+        ])}});
   }})();
 
   // ── 2. 10Y-2Y 스프레드 ────────────────────────────────────────
+  // T10Y2Y는 %p 단위: 0.5%p = 50bp
   (function(){{
-    var sp=gv('yield_sprd');
+    var sp=gv('yield_sprd'), lv=lat(sp.vals);
     if(!sp.vals.length){{showEmpty('m_yield_sprd','10Y-2Y 스프레드 — 수집 중');return;}}
-    var lv=lat(sp.vals);
-    // 신호등: 역전(-0.5이하)=위험, 역전중(0이하)=주의, 0초과=안정
-    var s=lv<-0.5?{{emoji:'🔴',label:'역전 심화 (침체 강신호)'}}:lv<0?{{emoji:'🟡',label:'역전 중 (침체 경보)'}}:lv<0.5?{{emoji:'🟢',label:'정상화 진행'}}:{{emoji:'🟢',label:'정상 (양수 유지)'}};
-    var cols=sp.vals.map(function(v){{return v===null?'#aaa':v>=0?'rgba(29,158,117,0.75)':'rgba(226,75,74,0.75)';}});
+    var s=lv<-0.5?{{e:'🔴',l:'역전 심화 (침체 강신호)'}}:
+          lv<0   ?{{e:'🟡',l:'역전 중 (침체 경보)'}}:
+          lv<0.5 ?{{e:'🟢',l:'정상화 진입'}}:
+                  {{e:'🟢',l:'정상 (양수 유지)'}};
+    var cols=sp.vals.map(function(v){{
+      return v===null?'#aaa':v>=0?'rgba(29,158,117,0.75)':'rgba(226,75,74,0.75)';
+    }});
     Plotly.newPlot('m_yield_sprd',
-      [{{x:sp.dates,y:sp.vals,type:'bar',name:'10Y-2Y',marker:{{color:cols}},hovertemplate:'%{{x}}<br>%{{y:.2f}}%p<extra></extra>'}}],
+      [{{x:sp.dates,y:sp.vals,type:'bar',name:'10Y-2Y (%p)',marker:{{color:cols}},
+        hovertemplate:'%{{x}}<br>%{{y:.2f}}%p<extra></extra>'}}],
       Object.assign({{}},base,{{
-        title:{{text:'10Y-2Y 수익률 스프레드   '+fv(lv)+'%p   '+s.emoji+' '+s.label,font:{{size:13}}}},
+        title:{{text:'10Y-2Y 수익률 스프레드   '+fv(lv)+'%p   '+s.e+' '+s.l,font:{{size:13}}}},
         margin:BM,
-        yaxis:{{title:'%p',gridcolor:'#F3F4F6',zeroline:true,zerolinecolor:'#333',zerolinewidth:2}},
-        shapes:bands([
-          {{y0:-99,y1:-0.5,color:'rgba(226,75,74,0.10)'}},
-          {{y0:-0.5,y1:0,color:'rgba(226,75,74,0.05)'}},
-          {{y0:0,y1:0.5,color:'rgba(186,117,23,0.04)'}},
-          {{y0:0.5,y1:99,color:'rgba(29,158,117,0.05)'}}
-        ]).concat(hlines([
-          {{y:-0.5,color:'#E24B4A',dash:'dot'}},
-          {{y:0,color:'#333',dash:'solid'}},
-          {{y:0.5,color:'#1D9E75',dash:'dot'}}
+        yaxis:{{title:'%p (양수=정상, 음수=역전)',gridcolor:'#F3F4F6',
+               zeroline:true,zerolinecolor:'#333',zerolinewidth:2}},
+        shapes:bd([
+          {{y0:-99,y1:-0.5,c:'rgba(226,75,74,0.12)'}},
+          {{y0:-0.5,y1:0,c:'rgba(226,75,74,0.06)'}},
+          {{y0:0,y1:0.5,c:'rgba(186,117,23,0.04)'}},
+          {{y0:0.5,y1:99,c:'rgba(29,158,117,0.05)'}}
+        ]).concat(hl([
+          {{y:-0.5,c:'#E24B4A'}},{{y:0,c:'#333',d:'solid'}},{{y:0.5,c:'#1D9E75'}}
         ])),
-        annotations:hlabels([
-          {{y:-0.5,text:'심화(-0.5)',color:'#E24B4A'}},
-          {{y:0,text:'역전기준(0)',color:'#E24B4A'}},
-          {{y:0.5,text:'정상화(0.5)',color:'#1D9E75'}}
+        annotations:rl([
+          {{y:-0.5,t:'심화(-0.5%p)',c:'#E24B4A'}},
+          {{y:0,t:'역전기준',c:'#E24B4A'}},
+          {{y:0.5,t:'정상(+0.5%p)',c:'#1D9E75'}}
         ]),
         bargap:0.3
       }}),{{displayModeBar:false,responsive:true}});
@@ -2601,195 +2587,134 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
 
   // ── 3. 실질금리 ──────────────────────────────────────────────
   (function(){{
-    var rv=gv('real_yield');
-    var lv=lat(rv.vals);
-    // 실질금리: 2%이상=과도한긴축, 0~2=정상긴축, 0이하=완화적
-    var s=sig(lv,[0,2.0],['완화적 (성장주 유리)','정상 긴축 구간','과도한 긴축 (성장주 압박)']);
+    var rv=gv('real_yield'), lv=lat(rv.vals);
+    var s=sig(lv,0,2.0,['완화 (성장주 유리)','정상 긴축','과도 긴축 (성장주 압박)']);
     mplt('m_real_yield',[ar(rv.dates,rv.vals,'실질금리 (TIPS 10Y)','rgb(83,74,183)')],
-      '실질금리 (TIPS 10Y)   '+fv(lv)+'%   '+s.emoji+' '+s.label,
-      {{yaxis:{{title:'%',ticksuffix:'%',gridcolor:'#F3F4F6',zeroline:true,zerolinecolor:'#888',zerolinewidth:1.5}},
-        shapes:bands([
-          {{y0:-99,y1:0,color:'rgba(29,158,117,0.07)'}},
-          {{y0:0,y1:2.0,color:'rgba(255,255,255,0)'}},
-          {{y0:2.0,y1:99,color:'rgba(226,75,74,0.07)'}}
-        ]).concat(hlines([
-          {{y:0,color:'#888',dash:'solid'}},
-          {{y:2.0,color:'#E24B4A',dash:'dot'}}
-        ])),
-        annotations:hlabels([
-          {{y:0,text:'0% (중립)',color:'#888'}},
-          {{y:2.0,text:'과도긴축(2%)',color:'#E24B4A'}}
-        ])}});
+      '실질금리 (TIPS 10Y)   '+fv(lv)+'%   '+s.e+' '+s.l,
+      {{yaxis:{{title:'%',ticksuffix:'%',gridcolor:'#F3F4F6',
+              zeroline:true,zerolinecolor:'#888',zerolinewidth:1.5}},
+        shapes:bd([{{y0:-99,y1:0,c:'rgba(29,158,117,0.07)'}},
+                    {{y0:2.0,y1:99,c:'rgba(226,75,74,0.07)'}}]).concat(
+          hl([{{y:0,c:'#888',d:'solid'}},{{y:2.0,c:'#E24B4A'}}])),
+        annotations:rl([{{y:0,t:'0% 중립',c:'#888'}},{{y:2.0,t:'과도긴축(2%)',c:'#E24B4A'}}])}});
   }})();
 
   // ── 4. Fed Funds Rate ────────────────────────────────────────
   (function(){{
-    var fd=gv('fed_rate');
-    var lv=lat(fd.vals);
-    // 중립금리(r*) ~2.5%: 이상=긴축, 이하=완화
-    var s=lv>=4.5?{{emoji:'🔴',label:'강한 긴축'}}:lv>=3.0?{{emoji:'🟡',label:'긴축 구간'}}:lv>=2.5?{{emoji:'🟢',label:'중립 근처'}}:{{emoji:'🟢',label:'완화적'}};
+    var fd=gv('fed_rate'), lv=lat(fd.vals);
+    var s=lv>=4.5?{{e:'🔴',l:'강한 긴축'}}:lv>=3.0?{{e:'🟡',l:'긴축 구간'}}:
+          lv>=2.5?{{e:'🟢',l:'중립 근처'}}:{{e:'🟢',l:'완화'}};
     mplt('m_fed_rate',[ln(fd.dates,fd.vals,'Fed Funds Rate','#1D9E75')],
-      'Fed 기준금리 (실효)   현재 '+fv(lv)+'%   '+s.emoji+' '+s.label,
+      'Fed 기준금리 (실효)   현재 '+fv(lv)+'%   '+s.e+' '+s.l,
       {{yaxis:{{title:'%',ticksuffix:'%',gridcolor:'#F3F4F6'}},
-        shapes:bands([
-          {{y0:0,y1:2.5,color:'rgba(29,158,117,0.06)'}},
-          {{y0:2.5,y1:4.0,color:'rgba(186,117,23,0.05)'}},
-          {{y0:4.0,y1:99,color:'rgba(226,75,74,0.06)'}}
-        ]).concat(hlines([
-          {{y:2.5,color:'#1D9E75',dash:'dot'}},
-          {{y:4.0,color:'#BA7517',dash:'dot'}},
-          {{y:5.0,color:'#E24B4A',dash:'dot'}}
-        ])),
-        annotations:hlabels([
-          {{y:2.5,text:'중립금리(2.5%)',color:'#1D9E75'}},
-          {{y:4.0,text:'긴축(4%)',color:'#BA7517'}},
-          {{y:5.0,text:'강긴축(5%)',color:'#E24B4A'}}
-        ])}});
+        shapes:bd([{{y0:0,y1:2.5,c:'rgba(29,158,117,0.06)'}},
+                    {{y0:2.5,y1:4.0,c:'rgba(186,117,23,0.05)'}},
+                    {{y0:4.0,y1:99,c:'rgba(226,75,74,0.06)'}}]).concat(
+          hl([{{y:2.5,c:'#1D9E75'}},{{y:4.0,c:'#BA7517'}},{{y:5.0,c:'#E24B4A'}}])),
+        annotations:rl([{{y:2.5,t:'중립(2.5%)',c:'#1D9E75'}},
+                         {{y:4.0,t:'긴축(4%)',c:'#BA7517'}},
+                         {{y:5.0,t:'강긴축(5%)',c:'#E24B4A'}}])}});
   }})();
 
   // ── 5. 하이일드 스프레드 ─────────────────────────────────────
+  // BAMLH0A0HYM2는 % 단위 (3.5% = ~350bp)
+  // 신호등: 3.5% 주의, 6.0% 위험
   (function(){{
     var hy=gv('hy_sprd');
     if(!hy.vals.length){{showEmpty('m_hy_sprd','HY 스프레드 — 수집 중');return;}}
     var lv=lat(hy.vals);
-    var s=sig(lv,[350,600],['안정 (크레딧 양호)','주의 (리스크 증가)','위험 (크레딧 경색)']);
+    // % 단위로 표시, bp 환산 = ×100
+    var bp=lv!==null?Math.round(lv*100):null;
+    var s=sig(lv,3.5,6.0,['안정 (크레딧 양호)','주의 (리스크 증가)','위험 (크레딧 경색)']);
     Plotly.newPlot('m_hy_sprd',
       [{{x:hy.dates,y:hy.vals,type:'scatter',mode:'lines',connectgaps:true,fill:'tozeroy',
-        line:{{color:'#D85A30',width:2.2}},fillcolor:'rgba(216,90,48,0.10)',
-        hovertemplate:'%{{x}}<br>%{{y:.0f}}bp<extra></extra>'}}],
+        name:'HY OAS (%)',line:{{color:'#D85A30',width:2.2}},fillcolor:'rgba(216,90,48,0.10)',
+        hovertemplate:'%{{x}}<br>%{{y:.2f}}% (~%{{y:.2f}}×100bp)<extra></extra>'}}],
       Object.assign({{}},base,{{
-        title:{{text:'하이일드 스프레드   '+fv(lv,0)+'bp   '+s.emoji+' '+s.label,font:{{size:13}}}},
+        title:{{text:'하이일드 OAS 스프레드   '+fv(lv)+'% (~'+(bp||'N/A')+'bp)   '+s.e+' '+s.l,font:{{size:13}}}},
         margin:BM,
-        yaxis:{{title:'bp',gridcolor:'#F3F4F6'}},
-        shapes:bands([
-          {{y0:0,y1:300,color:'rgba(29,158,117,0.07)'}},
-          {{y0:300,y1:350,color:'rgba(255,255,255,0)'}},
-          {{y0:350,y1:600,color:'rgba(186,117,23,0.06)'}},
-          {{y0:600,y1:9999,color:'rgba(226,75,74,0.09)'}}
-        ]).concat(hlines([
-          {{y:300,color:'#1D9E75',dash:'dot'}},
-          {{y:350,color:'#BA7517',dash:'dot'}},
-          {{y:600,color:'#E24B4A',dash:'dot'}},
-          {{y:1000,color:'#8B0000',dash:'dot'}}
-        ])),
-        annotations:hlabels([
-          {{y:300,text:'안정(<300)',color:'#1D9E75'}},
-          {{y:350,text:'주의(350)',color:'#BA7517'}},
-          {{y:600,text:'위험(600)',color:'#E24B4A'}},
-          {{y:1000,text:'위기(1000)',color:'#8B0000'}}
-        ])
+        yaxis:{{title:'OAS (%)',gridcolor:'#F3F4F6'}},
+        shapes:bd([{{y0:0,y1:3.0,c:'rgba(29,158,117,0.07)'}},
+                    {{y0:3.5,y1:6.0,c:'rgba(186,117,23,0.07)'}},
+                    {{y0:6.0,y1:99,c:'rgba(226,75,74,0.09)'}}]).concat(
+          hl([{{y:3.0,c:'#1D9E75'}},{{y:3.5,c:'#BA7517'}},
+              {{y:6.0,c:'#E24B4A'}},{{y:10.0,c:'#8B0000'}}])),
+        annotations:rl([{{y:3.0,t:'안정(<3%=300bp)',c:'#1D9E75'}},
+                         {{y:3.5,t:'주의(3.5%=350bp)',c:'#BA7517'}},
+                         {{y:6.0,t:'위험(6%=600bp)',c:'#E24B4A'}},
+                         {{y:10.0,t:'위기(10%=1000bp)',c:'#8B0000'}}])
       }}),{{displayModeBar:false,responsive:true}});
   }})();
 
   // ── 6. 달러 광의지수 ─────────────────────────────────────────
   (function(){{
-    var dx=gv('dxy');
-    var lv=lat(dx.vals);
-    // 달러지수: 120이상=극강세(신흥국위험), 110이상=강세, 100이하=약세
-    var s=lv!==null&&lv>=120?{{emoji:'🔴',label:'달러 극강세 (신흥국·원화 위험)'}}:
-          lv!==null&&lv>=110?{{emoji:'🟡',label:'달러 강세 (원화 약세압력)'}}:
-          lv!==null&&lv<=95?{{emoji:'🟢',label:'달러 약세 (원화 강세)'}}:
-          {{emoji:'🟢',label:'중립'}};
+    var dx=gv('dxy'), lv=lat(dx.vals);
+    var s=lv>=120?{{e:'🔴',l:'극강세 (신흥국·원화 위험)'}}:
+          lv>=110?{{e:'🟡',l:'강세 (원화 약세 압력)'}}:
+          lv<=95 ?{{e:'🟢',l:'약세 (원화 강세)'}}:{{e:'🟢',l:'중립'}};
     mplt('m_dxy',[ln(dx.dates,dx.vals,'달러 광의지수','#BA7517')],
-      '달러 광의지수 (Broad TWD)   '+fv(lv,1)+'   '+s.emoji+' '+s.label,
+      '달러 광의지수 (Broad TWD)   '+fv(lv,1)+'   '+s.e+' '+s.l,
       {{yaxis:{{title:'지수',gridcolor:'#F3F4F6'}},
-        shapes:bands([
-          {{y0:0,y1:95,color:'rgba(29,158,117,0.07)'}},
-          {{y0:95,y1:110,color:'rgba(255,255,255,0)'}},
-          {{y0:110,y1:120,color:'rgba(186,117,23,0.06)'}},
-          {{y0:120,y1:999,color:'rgba(226,75,74,0.08)'}}
-        ]).concat(hlines([
-          {{y:95,color:'#1D9E75',dash:'dot'}},
-          {{y:110,color:'#BA7517',dash:'dot'}},
-          {{y:120,color:'#E24B4A',dash:'dot'}}
-        ])),
-        annotations:hlabels([
-          {{y:95,text:'약세(<95)',color:'#1D9E75'}},
-          {{y:110,text:'강세(110)',color:'#BA7517'}},
-          {{y:120,text:'극강세(120)',color:'#E24B4A'}}
-        ])}});
+        shapes:bd([{{y0:0,y1:95,c:'rgba(29,158,117,0.07)'}},
+                    {{y0:110,y1:120,c:'rgba(186,117,23,0.06)'}},
+                    {{y0:120,y1:999,c:'rgba(226,75,74,0.08)'}}]).concat(
+          hl([{{y:95,c:'#1D9E75'}},{{y:110,c:'#BA7517'}},{{y:120,c:'#E24B4A'}}])),
+        annotations:rl([{{y:95,t:'약세(<95)',c:'#1D9E75'}},
+                         {{y:110,t:'강세(110)',c:'#BA7517'}},
+                         {{y:120,t:'극강세(120)',c:'#E24B4A'}}])}});
   }})();
 
   // ── 7. Core CPI YoY ──────────────────────────────────────────
   (function(){{
-    var cc=gv('core_cpi');
-    var lv=lat(cc.vals);
-    var s=sig(lv,[2.5,3.5],['안정 (목표 근접)','주의 (목표 초과)','과열 (긴축 강화)']);
-    var rgb=lv!==null&&lv>3.5?'226,75,74':lv!==null&&lv>2.5?'186,117,23':'29,158,117';
+    var cc=gv('core_cpi'), lv=lat(cc.vals);
+    var s=sig(lv,2.5,3.5,['안정 (목표 근접)','주의 (목표 초과)','과열 (긴축 지속)']);
+    var rgb=lv>3.5?'226,75,74':lv>2.5?'186,117,23':'29,158,117';
     mplt('m_core_cpi',[ar(cc.dates,cc.vals,'Core CPI YoY','rgb('+rgb+')')],
-      'Core CPI YoY   '+fv(lv)+'%   '+s.emoji+' '+s.label,
+      'Core CPI YoY   '+fv(lv)+'%   '+s.e+' '+s.l,
       {{yaxis:{{title:'YoY %',ticksuffix:'%',gridcolor:'#F3F4F6'}},
-        shapes:bands([
-          {{y0:0,y1:2.0,color:'rgba(29,158,117,0.08)'}},
-          {{y0:2.0,y1:2.5,color:'rgba(29,158,117,0.03)'}},
-          {{y0:2.5,y1:3.5,color:'rgba(186,117,23,0.07)'}},
-          {{y0:3.5,y1:99,color:'rgba(226,75,74,0.10)'}}
-        ]).concat(hlines([
-          {{y:2.0,color:'#1D9E75',dash:'dot'}},
-          {{y:2.5,color:'#BA7517',dash:'dot'}},
-          {{y:3.5,color:'#E24B4A',dash:'dot'}}
-        ])),
-        annotations:hlabels([
-          {{y:2.0,text:'목표(2%)',color:'#1D9E75'}},
-          {{y:2.5,text:'주의(2.5%)',color:'#BA7517'}},
-          {{y:3.5,text:'과열(3.5%)',color:'#E24B4A'}}
-        ])}});
+        shapes:bd([{{y0:0,y1:2.0,c:'rgba(29,158,117,0.08)'}},
+                    {{y0:2.5,y1:3.5,c:'rgba(186,117,23,0.07)'}},
+                    {{y0:3.5,y1:99,c:'rgba(226,75,74,0.10)'}}]).concat(
+          hl([{{y:2.0,c:'#1D9E75'}},{{y:2.5,c:'#BA7517'}},{{y:3.5,c:'#E24B4A'}}])),
+        annotations:rl([{{y:2.0,t:'목표(2%)',c:'#1D9E75'}},
+                         {{y:2.5,t:'주의(2.5%)',c:'#BA7517'}},
+                         {{y:3.5,t:'과열(3.5%)',c:'#E24B4A'}}])}});
   }})();
 
   // ── 8. Core PCE YoY ──────────────────────────────────────────
   (function(){{
-    var cp=gv('core_pce');
-    var lv=lat(cp.vals);
-    var s=sig(lv,[2.5,3.0],['안정 (Fed 목표 근접)','주의 (목표 초과 — 인하 지연)','과열 (인하 불가)']);
+    var cp=gv('core_pce'), lv=lat(cp.vals);
+    var s=sig(lv,2.5,3.0,['안정 (Fed 목표 근접)','주의 (인하 지연)','과열 (인하 불가)']);
     mplt('m_core_pce',[ar(cp.dates,cp.vals,'Core PCE YoY','rgb(83,74,183)')],
-      'Core PCE YoY (Fed 목표지표)   '+fv(lv)+'%   '+s.emoji+' '+s.label,
+      'Core PCE YoY (Fed 목표)   '+fv(lv)+'%   '+s.e+' '+s.l,
       {{yaxis:{{title:'YoY %',ticksuffix:'%',gridcolor:'#F3F4F6'}},
-        shapes:bands([
-          {{y0:0,y1:2.0,color:'rgba(29,158,117,0.08)'}},
-          {{y0:2.0,y1:2.5,color:'rgba(29,158,117,0.03)'}},
-          {{y0:2.5,y1:3.0,color:'rgba(186,117,23,0.07)'}},
-          {{y0:3.0,y1:99,color:'rgba(226,75,74,0.10)'}}
-        ]).concat(hlines([
-          {{y:2.0,color:'#1D9E75',dash:'dot'}},
-          {{y:2.5,color:'#BA7517',dash:'dot'}},
-          {{y:3.0,color:'#E24B4A',dash:'dot'}}
-        ])),
-        annotations:hlabels([
-          {{y:2.0,text:'목표(2%)',color:'#1D9E75'}},
-          {{y:2.5,text:'주의(2.5%)',color:'#BA7517'}},
-          {{y:3.0,text:'과열(3%)',color:'#E24B4A'}}
-        ])}});
+        shapes:bd([{{y0:0,y1:2.0,c:'rgba(29,158,117,0.08)'}},
+                    {{y0:2.5,y1:3.0,c:'rgba(186,117,23,0.07)'}},
+                    {{y0:3.0,y1:99,c:'rgba(226,75,74,0.10)'}}]).concat(
+          hl([{{y:2.0,c:'#1D9E75'}},{{y:2.5,c:'#BA7517'}},{{y:3.0,c:'#E24B4A'}}])),
+        annotations:rl([{{y:2.0,t:'목표(2%)',c:'#1D9E75'}},
+                         {{y:2.5,t:'주의(2.5%)',c:'#BA7517'}},
+                         {{y:3.0,t:'과열(3%)',c:'#E24B4A'}}])}});
   }})();
 
   // ── 9. 실업률 ────────────────────────────────────────────────
   (function(){{
-    var ur=gv('unrate');
-    var lv=lat(ur.vals);
-    // 실업률: 낮을수록 좋지만 너무 낮으면 인플레 위험. 높을수록 침체 위험
-    var s=lv!==null&&lv>=5.5?{{emoji:'🔴',label:'침체 위험 (고용 악화)'}}:
-          lv!==null&&lv>=4.5?{{emoji:'🟡',label:'주의 (증가 추세)'}}:
-          lv!==null&&lv<=3.5?{{emoji:'🟡',label:'과열 (인플레 압박)'}}:
-          {{emoji:'🟢',label:'정상 범위'}};
+    var ur=gv('unrate'), lv=lat(ur.vals);
+    var s=lv>=5.5?{{e:'🔴',l:'침체 위험 (고용 악화)'}}:
+          lv>=4.5?{{e:'🟡',l:'주의 (증가 추세)'}}:
+          lv<=3.5?{{e:'🟡',l:'과열 (인플레 압박)'}}:
+                  {{e:'🟢',l:'정상 범위 (3.5~4.5%)'}};
     mplt('m_unrate',[ar(ur.dates,ur.vals,'실업률','rgb(24,95,165)')],
-      '미국 실업률   '+fv(lv,1)+'%   '+s.emoji+' '+s.label,
+      '미국 실업률   '+fv(lv,1)+'%   '+s.e+' '+s.l,
       {{yaxis:{{title:'%',ticksuffix:'%',gridcolor:'#F3F4F6'}},
-        shapes:bands([
-          {{y0:0,y1:3.5,color:'rgba(186,117,23,0.06)'}},
-          {{y0:3.5,y1:4.5,color:'rgba(29,158,117,0.06)'}},
-          {{y0:4.5,y1:5.5,color:'rgba(186,117,23,0.07)'}},
-          {{y0:5.5,y1:99,color:'rgba(226,75,74,0.10)'}}
-        ]).concat(hlines([
-          {{y:3.5,color:'#BA7517',dash:'dot'}},
-          {{y:4.0,color:'#1D9E75',dash:'dot'}},
-          {{y:4.5,color:'#BA7517',dash:'dot'}},
-          {{y:5.5,color:'#E24B4A',dash:'dot'}}
-        ])),
-        annotations:hlabels([
-          {{y:3.5,text:'과열(<3.5%)',color:'#BA7517'}},
-          {{y:4.0,text:'정상(4%)',color:'#1D9E75'}},
-          {{y:4.5,text:'주의(4.5%)',color:'#BA7517'}},
-          {{y:5.5,text:'침체(5.5%)',color:'#E24B4A'}}
-        ])}});
+        shapes:bd([{{y0:0,y1:3.5,c:'rgba(186,117,23,0.06)'}},
+                    {{y0:3.5,y1:4.5,c:'rgba(29,158,117,0.06)'}},
+                    {{y0:4.5,y1:5.5,c:'rgba(186,117,23,0.07)'}},
+                    {{y0:5.5,y1:99,c:'rgba(226,75,74,0.10)'}}]).concat(
+          hl([{{y:3.5,c:'#BA7517'}},{{y:4.5,c:'#BA7517'}},{{y:5.5,c:'#E24B4A'}}])),
+        annotations:rl([{{y:3.5,t:'과열(<3.5%)',c:'#BA7517'}},
+                         {{y:4.5,t:'주의(4.5%)',c:'#BA7517'}},
+                         {{y:5.5,t:'침체(5.5%)',c:'#E24B4A'}}])}});
   }})();
 
   // ── 10. 비농업 고용 MoM ──────────────────────────────────────
@@ -2800,72 +2725,52 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
       return (i===0||v===null||nf.vals[i-1]===null)?null:Math.round(v-nf.vals[i-1]);
     }});
     var cols=mom.map(function(v){{
-      if(v===null) return '#aaa';
-      return v>=150000?'rgba(29,158,117,0.80)':v>=0?'rgba(29,158,117,0.45)':'rgba(226,75,74,0.75)';
+      return v===null?'#aaa':v>=150000?'rgba(29,158,117,0.80)':v>=0?'rgba(29,158,117,0.45)':'rgba(226,75,74,0.75)';
     }});
     var filt=mom.filter(function(v){{return v!==null;}});
     var latV=filt.length?filt[filt.length-1]:null;
-    var s=latV!==null&&latV<0?{{emoji:'🔴',label:'고용 감소'}}:
-          latV!==null&&latV<100000?{{emoji:'🟡',label:'약한 증가'}}:
-          {{emoji:'🟢',label:'양호'}};
+    var s=latV!==null&&latV<0?{{e:'🔴',l:'고용 감소'}}:
+          latV!==null&&latV<100000?{{e:'🟡',l:'약한 증가 (<10만)'}}:{{e:'🟢',l:'양호 (>15만)'}};
     Plotly.newPlot('m_nfp_mom',
       [{{x:nf.dates,y:mom,type:'bar',name:'NFP MoM',marker:{{color:cols}},
         hovertemplate:'%{{x}}<br>%{{y:+,.0f}}명<extra></extra>'}}],
       Object.assign({{}},base,{{
-        title:{{text:'비농업 고용 MoM   최근 '+(latV!==null?(latV>0?'+':'')+latV.toLocaleString()+'명':'N/A')+'   '+s.emoji+' '+s.label,font:{{size:13}}}},
-        margin:{{t:48,r:40,b:36,l:72}},
+        title:{{text:'비농업 고용 MoM   최근 '+(latV!==null?(latV>0?'+':'')+Math.round(latV/1000)+'k명':'N/A')+'   '+s.e+' '+s.l,font:{{size:13}}}},
+        margin:{{t:50,r:95,b:36,l:72}},
         yaxis:{{title:'명',gridcolor:'#F3F4F6',zeroline:true,zerolinecolor:'#555',zerolinewidth:1.5}},
-        shapes:hlines([
-          {{y:150000,color:'#1D9E75',dash:'dot'}},
-          {{y:0,color:'#555',dash:'solid'}}
-        ]).concat(bands([
-          {{y0:-9999999,y1:0,color:'rgba(226,75,74,0.06)'}},
-          {{y0:0,y1:150000,color:'rgba(186,117,23,0.04)'}},
-          {{y0:150000,y1:9999999,color:'rgba(29,158,117,0.04)'}}
-        ])),
-        annotations:hlabels([
-          {{y:150000,text:'양호(+150k)',color:'#1D9E75'}},
-          {{y:0,text:'0 기준선',color:'#555'}}
-        ]),
+        shapes:bd([{{y0:-9e6,y1:0,c:'rgba(226,75,74,0.06)'}},
+                    {{y0:0,y1:150000,c:'rgba(186,117,23,0.04)'}},
+                    {{y0:150000,y1:9e6,c:'rgba(29,158,117,0.04)'}}]).concat(
+          hl([{{y:150000,c:'#1D9E75'}},{{y:0,c:'#555',d:'solid'}}])),
+        annotations:rl([{{y:150000,t:'양호(+150k)',c:'#1D9E75'}},{{y:0,t:'기준선',c:'#555'}}]),
         bargap:0.35
       }}),{{displayModeBar:false,responsive:true}});
   }})();
 
   // ── 11. 미시간 소비자신뢰지수 ─────────────────────────────────
   (function(){{
-    var mc=gv('mich');
-    var lv=lat(mc.vals);
-    var s=lv!==null&&lv<60?{{emoji:'🔴',label:'극도의 비관 (침체 신호)'}}:
-          lv!==null&&lv<70?{{emoji:'🟡',label:'비관 (소비 위축 우려)'}}:
-          lv!==null&&lv<85?{{emoji:'🟢',label:'보통'}}:
-          {{emoji:'🟢',label:'낙관'}};
-    mplt('m_mich',[ar(mc.dates,mc.vals,'미시간 소비자신뢰지수','rgb(29,158,117)')],
-      '미시간 소비자신뢰지수   '+fv(lv,1)+'   '+s.emoji+' '+s.label,
+    var mc=gv('mich'), lv=lat(mc.vals);
+    var s=lv<60?{{e:'🔴',l:'극비관 (침체 신호)'}}:
+          lv<70?{{e:'🟡',l:'비관 (소비 위축)'}}:
+          lv<85?{{e:'🟢',l:'보통'}}:{{e:'🟢',l:'낙관'}};
+    mplt('m_mich',[ar(mc.dates,mc.vals,'미시간 소비자신뢰','rgb(29,158,117)')],
+      '미시간 소비자신뢰지수   '+fv(lv,1)+'   '+s.e+' '+s.l,
       {{yaxis:{{title:'지수',gridcolor:'#F3F4F6'}},
-        shapes:bands([
-          {{y0:0,y1:60,color:'rgba(226,75,74,0.08)'}},
-          {{y0:60,y1:70,color:'rgba(186,117,23,0.06)'}},
-          {{y0:70,y1:85,color:'rgba(255,255,255,0)'}},
-          {{y0:85,y1:999,color:'rgba(29,158,117,0.05)'}}
-        ]).concat(hlines([
-          {{y:60,color:'#E24B4A',dash:'dot'}},
-          {{y:70,color:'#BA7517',dash:'dot'}},
-          {{y:85,color:'#1D9E75',dash:'dot'}}
-        ])),
-        annotations:hlabels([
-          {{y:60,text:'침체신호(60)',color:'#E24B4A'}},
-          {{y:70,text:'비관(70)',color:'#BA7517'}},
-          {{y:85,text:'보통(85)',color:'#1D9E75'}}
-        ])}});
+        shapes:bd([{{y0:0,y1:60,c:'rgba(226,75,74,0.08)'}},
+                    {{y0:60,y1:70,c:'rgba(186,117,23,0.06)'}},
+                    {{y0:85,y1:999,c:'rgba(29,158,117,0.05)'}}]).concat(
+          hl([{{y:60,c:'#E24B4A'}},{{y:70,c:'#BA7517'}},{{y:85,c:'#1D9E75'}}])),
+        annotations:rl([{{y:60,t:'침체신호(60)',c:'#E24B4A'}},
+                         {{y:70,t:'비관(70)',c:'#BA7517'}},
+                         {{y:85,t:'보통(85)',c:'#1D9E75'}}])}});
   }})();
 
-  // ── 12. 연준 자산 (QE/QT) ────────────────────────────────────
+  // ── 12. 연준 자산 ────────────────────────────────────────────
   (function(){{
     var fa=gv('fed_assets');
     if(!fa.vals.length){{showEmpty('m_fed_assets','연준 자산 — 수집 중');return;}}
     var peak=Math.max.apply(null,fa.vals.filter(function(v){{return v!==null;}}));
-    var lv=lat(fa.vals);
-    var pct=lv&&peak?(lv/peak*100):null;
+    var lv=lat(fa.vals), pct=lv&&peak?lv/peak*100:null;
     var isQT=lv&&lv<peak*0.98;
     var c=isQT?'#185FA5':'#E24B4A';
     var lbl=isQT?'🔵 QT 진행 중 (고점 대비 '+fv(pct,0)+'%)':'🔴 QE 또는 자산 확대';
@@ -2875,7 +2780,7 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
         hovertemplate:'%{{x}}<br>$%{{y:,.0f}}B<extra></extra>'}}],
       Object.assign({{}},base,{{
         title:{{text:'연준 자산 규모   $'+(lv?(lv/1000).toFixed(1)+'T':'N/A')+'   '+lbl,font:{{size:13}}}},
-        margin:{{t:48,r:40,b:36,l:78}},
+        margin:{{t:50,r:40,b:36,l:78}},
         yaxis:{{title:'십억 USD',gridcolor:'#F3F4F6'}}
       }}),{{displayModeBar:false,responsive:true}});
   }})();
@@ -2886,102 +2791,109 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
 
   // KR 기준금리
   (function(){{
-    var kb=gkv('base');
-    var lv=lat(kb.vals);
-    var s=lv!==null&&lv>=3.5?{{emoji:'🔴',label:'고금리 (성장 압박)'}}:
-          lv!==null&&lv>=2.5?{{emoji:'🟡',label:'긴축 구간'}}:
-          lv!==null&&lv<=1.5?{{emoji:'🟢',label:'완화적'}}:
-          {{emoji:'🟢',label:'중립 근처'}};
+    var kb=gkv('base'), lv=lat(kb.vals);
+    if(!kb.vals.length){{showEmpty('m_kr_base','한국 기준금리 — FRED 수집 중');return;}}
+    var s=lv>=3.5?{{e:'🔴',l:'고금리 (성장 압박)'}}:
+          lv>=2.5?{{e:'🟡',l:'긴축 구간'}}:
+          lv<=1.5?{{e:'🟢',l:'완화적'}}:{{e:'🟢',l:'중립'}};
     mplt('m_kr_base',[ln(kb.dates,kb.vals,'한국 기준금리','#1D9E75')],
-      '한국 기준금리   '+fv(lv)+'%   '+s.emoji+' '+s.label,
+      '한국 기준금리   '+fv(lv)+'%   '+s.e+' '+s.l,
       {{yaxis:{{title:'%',ticksuffix:'%',gridcolor:'#F3F4F6'}},
-        shapes:bands([
-          {{y0:0,y1:1.5,color:'rgba(29,158,117,0.07)'}},
-          {{y0:1.5,y1:2.5,color:'rgba(255,255,255,0)'}},
-          {{y0:2.5,y1:3.5,color:'rgba(186,117,23,0.06)'}},
-          {{y0:3.5,y1:99,color:'rgba(226,75,74,0.08)'}}
-        ]).concat(hlines([
-          {{y:1.5,color:'#1D9E75',dash:'dot'}},
-          {{y:2.5,color:'#BA7517',dash:'dot'}},
-          {{y:3.5,color:'#E24B4A',dash:'dot'}}
-        ])),
-        annotations:hlabels([
-          {{y:1.5,text:'완화(1.5%)',color:'#1D9E75'}},
-          {{y:2.5,text:'중립(2.5%)',color:'#BA7517'}},
-          {{y:3.5,text:'긴축(3.5%)',color:'#E24B4A'}}
-        ])}});
+        shapes:bd([{{y0:0,y1:1.5,c:'rgba(29,158,117,0.07)'}},
+                    {{y0:2.5,y1:3.5,c:'rgba(186,117,23,0.06)'}},
+                    {{y0:3.5,y1:99,c:'rgba(226,75,74,0.08)'}}]).concat(
+          hl([{{y:1.5,c:'#1D9E75'}},{{y:2.5,c:'#BA7517'}},{{y:3.5,c:'#E24B4A'}}])),
+        annotations:rl([{{y:1.5,t:'완화(1.5%)',c:'#1D9E75'}},
+                         {{y:2.5,t:'중립(2.5%)',c:'#BA7517'}},
+                         {{y:3.5,t:'긴축(3.5%)',c:'#E24B4A'}}])}});
   }})();
 
-  // KR 10년물 (데이터 없으면 숨김)
+  // KR 10년물 — 없으면 안내 메시지
   (function(){{
-    var k10=gkv('10y');
-    if(!k10.vals.length){{showEmpty('m_kr_10y','한국 10년물 — FRED 수집 중 (다음 업데이트 시 표시)');return;}}
-    var lv=lat(k10.vals);
-    var s=lv!==null&&lv>=4.0?{{emoji:'🔴',label:'고금리'}}:
-          lv!==null&&lv>=3.0?{{emoji:'🟡',label:'긴축 구간'}}:
-          {{emoji:'🟢',label:'안정'}};
+    var k10=gkv('10y'), lv=lat(k10.vals);
+    if(!k10.vals.length){{
+      var el=document.getElementById('m_kr_10y');
+      if(el) el.innerHTML='<div style="height:100%;display:flex;align-items:center;justify-content:center;flex-direction:column;color:#888;font-size:13px;gap:6px">'
+        +'<span>📭 한국 10년물 국채금리</span>'
+        +'<span style="font-size:11px">FRED 데이터 수집 중 — 내일 업데이트 후 표시됩니다</span>'
+        +'<span style="font-size:10px;color:#aaa">대체 출처: 한국은행 ECOS 직접 조회</span></div>';
+      return;
+    }}
+    var s=lv>=4.0?{{e:'🔴',l:'고금리'}}:lv>=3.0?{{e:'🟡',l:'긴축'}}:{{e:'🟢',l:'안정'}};
     mplt('m_kr_10y',[ln(k10.dates,k10.vals,'한국 10년물','#185FA5')],
-      '한국 국채 10년물   '+fv(lv)+'%   '+s.emoji+' '+s.label,
+      '한국 국채 10년물   '+fv(lv)+'%   '+s.e+' '+s.l,
       {{yaxis:{{title:'%',ticksuffix:'%',gridcolor:'#F3F4F6'}},
-        shapes:hlines([{{y:3.0,color:'#BA7517',dash:'dot'}},{{y:4.0,color:'#E24B4A',dash:'dot'}}]),
-        annotations:hlabels([{{y:3.0,text:'주의(3%)',color:'#BA7517'}},{{y:4.0,text:'고금리(4%)',color:'#E24B4A'}}])}});
+        shapes:hl([{{y:3.0,c:'#BA7517'}},{{y:4.0,c:'#E24B4A'}}]),
+        annotations:rl([{{y:3.0,t:'주의(3%)',c:'#BA7517'}},{{y:4.0,t:'위험(4%)',c:'#E24B4A'}}])}});
   }})();
 
   // 원/달러
   (function(){{
     var kw={{dates:D.krwusd_dates||[],vals:D.krwusd_vals||[]}};
     var lv=lat(kw.vals);
-    var s=lv!==null&&lv>=1450?{{emoji:'🔴',label:'위험 (외국인 이탈 임계)'}}:
-          lv!==null&&lv>=1400?{{emoji:'🟡',label:'주의 (약세 심화)'}}:
-          lv!==null&&lv<=1250?{{emoji:'🟢',label:'원화 강세'}}:
-          {{emoji:'🟢',label:'안정 범위'}};
+    var s=lv>=1450?{{e:'🔴',l:'위험 (외국인 이탈 임계)'}}:
+          lv>=1400?{{e:'🟡',l:'주의 (약세 심화)'}}:
+          lv<=1250?{{e:'🟢',l:'원화 강세'}}:{{e:'🟢',l:'안정'}};
     mplt('m_kr_krwusd',[ln(kw.dates,kw.vals,'원/달러','#D85A30')],
-      '원/달러 환율   '+fv(lv,0)+'원   '+s.emoji+' '+s.label,
+      '원/달러 환율   '+fv(lv,0)+'원   '+s.e+' '+s.l,
       {{yaxis:{{title:'원/달러 (₩)',gridcolor:'#F3F4F6'}},
-        shapes:bands([
-          {{y0:0,y1:1250,color:'rgba(29,158,117,0.07)'}},
-          {{y0:1250,y1:1350,color:'rgba(255,255,255,0)'}},
-          {{y0:1350,y1:1400,color:'rgba(186,117,23,0.05)'}},
-          {{y0:1400,y1:1450,color:'rgba(186,117,23,0.10)'}},
-          {{y0:1450,y1:9999,color:'rgba(226,75,74,0.10)'}}
-        ]).concat(hlines([
-          {{y:1250,color:'#1D9E75',dash:'dot'}},
-          {{y:1350,color:'#888',dash:'dot'}},
-          {{y:1400,color:'#BA7517',dash:'dot'}},
-          {{y:1450,color:'#E24B4A',dash:'dot'}}
-        ])),
-        annotations:hlabels([
-          {{y:1250,text:'강세(1250)',color:'#1D9E75'}},
-          {{y:1350,text:'보통(1350)',color:'#888'}},
-          {{y:1400,text:'주의(1400)',color:'#BA7517'}},
-          {{y:1450,text:'위험(1450)',color:'#E24B4A'}}
-        ])}});
+        shapes:bd([{{y0:0,y1:1250,c:'rgba(29,158,117,0.06)'}},
+                    {{y0:1400,y1:1450,c:'rgba(186,117,23,0.09)'}},
+                    {{y0:1450,y1:9999,c:'rgba(226,75,74,0.10)'}}]).concat(
+          hl([{{y:1250,c:'#1D9E75'}},{{y:1350,c:'#888'}},
+              {{y:1400,c:'#BA7517'}},{{y:1450,c:'#E24B4A'}}])),
+        annotations:rl([{{y:1250,t:'강세(1250)',c:'#1D9E75'}},
+                         {{y:1350,t:'보통(1350)',c:'#888'}},
+                         {{y:1400,t:'주의(1400)',c:'#BA7517'}},
+                         {{y:1450,t:'위험(1450)',c:'#E24B4A'}}])}});
   }})();
 
-  // KR 실업률
+  // KR 실업률 — 없으면 안내
   (function(){{
-    var ku=gkv('unrate');
-    if(!ku.vals.length){{showEmpty('m_kr_unrate','한국 실업률 — FRED 수집 중 (다음 업데이트 시 표시)');return;}}
-    var lv=lat(ku.vals);
-    var s=lv!==null&&lv>=4.5?{{emoji:'🔴',label:'높음'}}:
-          lv!==null&&lv>=3.5?{{emoji:'🟡',label:'주의'}}:
-          {{emoji:'🟢',label:'정상'}};
+    var ku=gkv('unrate'), lv=lat(ku.vals);
+    if(!ku.vals.length){{
+      var el=document.getElementById('m_kr_unrate');
+      if(el) el.innerHTML='<div style="height:100%;display:flex;align-items:center;justify-content:center;flex-direction:column;color:#888;font-size:13px;gap:6px">'
+        +'<span>📭 한국 실업률</span>'
+        +'<span style="font-size:11px">FRED 데이터 수집 중 (ILO 분기 데이터)</span>'
+        +'<span style="font-size:10px;color:#aaa">최근값: 약 2.8% (2026년 1분기 기준)</span></div>';
+      return;
+    }}
+    var s=lv>=4.5?{{e:'🔴',l:'높음'}}:lv>=3.5?{{e:'🟡',l:'주의'}}:{{e:'🟢',l:'정상'}};
     mplt('m_kr_unrate',[ar(ku.dates,ku.vals,'한국 실업률','rgb(83,74,183)')],
-      '한국 실업률   '+fv(lv,1)+'%   '+s.emoji+' '+s.label,
+      '한국 실업률   '+fv(lv,1)+'%   '+s.e+' '+s.l,
       {{yaxis:{{title:'%',ticksuffix:'%',gridcolor:'#F3F4F6'}},
-        shapes:hlines([{{y:3.5,color:'#BA7517',dash:'dot'}},{{y:4.5,color:'#E24B4A',dash:'dot'}}]),
-        annotations:hlabels([{{y:3.5,text:'주의(3.5%)',color:'#BA7517'}},{{y:4.5,text:'위험(4.5%)',color:'#E24B4A'}}])}});
+        shapes:hl([{{y:3.5,c:'#BA7517'}},{{y:4.5,c:'#E24B4A'}}]),
+        annotations:rl([{{y:3.5,t:'주의(3.5%)',c:'#BA7517'}},{{y:4.5,t:'위험(4.5%)',c:'#E24B4A'}}])}});
   }})();
 
-  // KR CPI
+  // KR CPI (YoY 계산해서 표시)
   (function(){{
     var kc=gkv('cpi');
-    if(!kc.vals.length){{showEmpty('m_kr_cpi','한국 CPI — FRED 수집 중 (다음 업데이트 시 표시)');return;}}
-    var lv=lat(kc.vals);
-    // 레벨 지수라 절대값으로 신호등 어려움 — 방향성으로 표시
-    mplt('m_kr_cpi',[ar(kc.dates,kc.vals,'한국 소비자물가지수','rgb(29,158,117)')],
-      '한국 CPI (레벨 지수)   최근값 '+fv(lv,1)+'   🟢 (방향성 확인요)',
-      {{yaxis:{{title:'지수 (레벨)',gridcolor:'#F3F4F6'}}}});
+    if(!kc.vals.length){{showEmpty('m_kr_cpi','한국 CPI — 수집 중');return;}}
+    // 레벨 → YoY% 계산 (12개월 전 대비)
+    var yoyV=[], yoyD=[];
+    for(var i=12;i<kc.vals.length;i++){{
+      var v=kc.vals[i], prev=kc.vals[i-12];
+      if(v!==null&&prev!==null&&prev!==0){{
+        yoyV.push(parseFloat(((v/prev-1)*100).toFixed(2)));
+        yoyD.push(kc.dates[i]);
+      }}
+    }}
+    var lv=lat(yoyV);
+    var s=sig(lv,2.5,3.5,['안정 (한은 목표 근접)','주의 (목표 초과)','과열']);
+    if(!yoyV.length){{showEmpty('m_kr_cpi','한국 CPI YoY — 데이터 부족');return;}}
+    var rgb=lv>3.5?'226,75,74':lv>2.5?'186,117,23':'29,158,117';
+    mplt('m_kr_cpi',[ar(yoyD,yoyV,'한국 CPI YoY','rgb('+rgb+')')],
+      '한국 CPI YoY (전년동월비)   '+fv(lv)+'%   '+s.e+' '+s.l,
+      {{yaxis:{{title:'YoY %',ticksuffix:'%',gridcolor:'#F3F4F6'}},
+        shapes:bd([{{y0:0,y1:2.0,c:'rgba(29,158,117,0.07)'}},
+                    {{y0:2.5,y1:3.5,c:'rgba(186,117,23,0.07)'}},
+                    {{y0:3.5,y1:99,c:'rgba(226,75,74,0.09)'}}]).concat(
+          hl([{{y:2.0,c:'#1D9E75'}},{{y:2.5,c:'#BA7517'}},{{y:3.5,c:'#E24B4A'}}])),
+        annotations:rl([{{y:2.0,t:'한은목표(2%)',c:'#1D9E75'}},
+                         {{y:2.5,t:'주의(2.5%)',c:'#BA7517'}},
+                         {{y:3.5,t:'과열(3.5%)',c:'#E24B4A'}}])}});
   }})();
 
 }})(); // end macro charts v2
