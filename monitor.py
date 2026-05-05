@@ -129,6 +129,49 @@ def fetch_cnn_fear_greed(days=LOOKBACK_DAYS):
     return pd.Series(dtype=float, name="cnn_fg")
 
 
+
+def fetch_macro_us():
+    """미국 핵심 매크로 FRED 시리즈 일괄 수집. {name: pd.Series}"""
+    targets = {
+        "DGS2":         "ust2y",
+        "T10Y2Y":       "yield_spread",
+        "DFII10":       "real_yield",
+        "DFF":          "fed_rate",
+        "BAMLH0A0HYM2": "hy_spread",
+        "CPILFESL":     "core_cpi_lvl",
+        "PCEPILFE":     "core_pce_lvl",
+        "UNRATE":       "unrate",
+        "WALCL":        "fed_assets",
+        "PAYEMS":       "nfp",
+        "UMCSENT":      "mich",
+        "DTWEXBGS":     "dxy",
+    }
+    result = {}
+    for sid, name in targets.items():
+        s = fetch_fred_series(sid, name, days=LOOKBACK_DAYS * 5)
+        if not s.empty:
+            result[name] = s
+    print(f"  macro_us: {len(result)}/{len(targets)} series")
+    return result
+
+
+def fetch_macro_kr():
+    """한국 핵심 매크로 FRED 시리즈. {name: pd.Series}"""
+    targets = {
+        "IRSTCI01KRM156N": "kr_base_rate",
+        "KORCPIALLAINMEI": "kr_cpi_lvl",
+        "LRUNTTTTKOM156S": "kr_unrate",
+        "IRDNKR01KRM156N": "kr_10y",
+    }
+    result = {}
+    for sid, name in targets.items():
+        s = fetch_fred_series(sid, name, days=LOOKBACK_DAYS * 6)
+        if not s.empty:
+            result[name] = s
+    print(f"  macro_kr: {len(result)}/{len(targets)} series")
+    return result
+
+
 def safe(fn_name, fn, default=None, retries=3, sleep=2):
     for i in range(retries):
         try:
@@ -804,6 +847,9 @@ def update_data():
     krwusd    = safe("krwusd",   fetch_krwusd,          default=pd.Series(dtype=float, name="krwusd"))
     cnn_fg    = safe("cnn_fg",   fetch_cnn_fear_greed,  default=pd.Series(dtype=float, name="cnn_fg"))
 
+    macro_us = safe("macro_us", fetch_macro_us, default={})
+    macro_kr = safe("macro_kr", fetch_macro_kr, default={})
+
     extras = {
         "us_margin_debt":    us_margin_debt,
         "kr_power_basket":   kr_power_basket,
@@ -811,9 +857,11 @@ def update_data():
         "m7_basket":         m7_basket,
         "us_indices_basket": us_indices_basket,
         "storage_basket":    storage_basket,
-        "fed_debt":          fed_debt,   # Series (분기, 십억달러)
-        "krwusd":            krwusd,     # Series (일별, 원/달러)
-        "cnn_fg":            cnn_fg,     # Series (일별, 0-100)
+        "fed_debt":          fed_debt,
+        "krwusd":            krwusd,
+        "cnn_fg":            cnn_fg,
+        "macro_us":          macro_us,
+        "macro_kr":          macro_kr,
     }
     return combined, extras
 
@@ -1469,6 +1517,58 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     js_data["fed_debt_dates"] = fed_debt_dates
     js_data["fed_debt_vals"] = fed_debt_vals
 
+    # ── macro US js_data ──────────────────────────────────────────
+    _mfus = extras.get("macro_us", {}) or {}
+
+    def _ms(nm, lm=4):
+        s = _mfus.get(nm)
+        if s is None or not isinstance(s, pd.Series) or s.empty:
+            return {"dates": [], "vals": []}
+        s = pd.to_numeric(s, errors="coerce").dropna().sort_index()
+        s = s[s.index >= TODAY - dt.timedelta(days=LOOKBACK_DAYS * lm)]
+        return {"dates": [d.strftime("%Y-%m-%d") for d in s.index],
+                "vals":  [round(float(v), 4) for v in s]}
+
+    def _ms_yoy(nm, lm=4):
+        s = _mfus.get(nm)
+        if s is None or not isinstance(s, pd.Series) or s.empty:
+            return {"dates": [], "vals": []}
+        s = pd.to_numeric(s, errors="coerce").dropna().sort_index()
+        yoy = s.pct_change(periods=12, fill_method=None).dropna() * 100
+        yoy = yoy[yoy.index >= TODAY - dt.timedelta(days=LOOKBACK_DAYS * lm)]
+        return {"dates": [d.strftime("%Y-%m-%d") for d in yoy.index],
+                "vals":  [round(float(v), 2) for v in yoy]}
+
+    js_data["m_ust2y"]      = _ms("ust2y")
+    js_data["m_yield_sprd"] = _ms("yield_spread")
+    js_data["m_real_yield"] = _ms("real_yield")
+    js_data["m_fed_rate"]   = _ms("fed_rate")
+    js_data["m_hy_sprd"]    = _ms("hy_spread")
+    js_data["m_core_cpi"]   = _ms_yoy("core_cpi_lvl")
+    js_data["m_core_pce"]   = _ms_yoy("core_pce_lvl")
+    js_data["m_unrate"]     = _ms("unrate")
+    js_data["m_fed_assets"] = _ms("fed_assets", lm=8)
+    js_data["m_nfp"]        = _ms("nfp")
+    js_data["m_mich"]       = _ms("mich")
+    js_data["m_dxy"]        = _ms("dxy")
+
+    # ── macro KR js_data ──────────────────────────────────────────
+    _mfkr = extras.get("macro_kr", {}) or {}
+
+    def _mks(nm):
+        s = _mfkr.get(nm)
+        if s is None or not isinstance(s, pd.Series) or s.empty:
+            return {"dates": [], "vals": []}
+        s = pd.to_numeric(s, errors="coerce").dropna().sort_index()
+        s = s[s.index >= TODAY - dt.timedelta(days=LOOKBACK_DAYS * 5)]
+        return {"dates": [d.strftime("%Y-%m-%d") for d in s.index],
+                "vals":  [round(float(v), 4) for v in s]}
+
+    js_data["m_kr_base"]   = _mks("kr_base_rate")
+    js_data["m_kr_cpi"]    = _mks("kr_cpi_lvl")
+    js_data["m_kr_unrate"] = _mks("kr_unrate")
+    js_data["m_kr_10y"]    = _mks("kr_10y")
+
 
 
     last_date = df_plot["date"].iloc[-1].strftime("%Y년 %m월 %d일") if not df_plot.empty else "대기"
@@ -1540,6 +1640,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
 <div class="tabs">
   <div class="tab active" data-tab="kr">🇰🇷 한국장 ({signals['label_kr']})</div>
   <div class="tab" data-tab="us">🇺🇸 미국장 ({signals['label_us']})</div>
+  <div class="tab" data-tab="macro">📡 매크로</div>
 </div>
 
 <div id="pane-kr" class="pane active">
@@ -1581,6 +1682,49 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
   <div class="chart"><div id="c_us_m7" style="height:900px;"></div></div>
   <div class="chart"><div id="c_us_cnn_fg" style="height:320px;"></div></div>
   <div class="chart"><div id="c_us_gl" style="height:380px;"></div></div>
+</div>
+
+<div id="pane-macro" class="pane">
+  <div class="section-title">📡 매크로 대시보드 — 매일 FRED 자동 업데이트</div>
+  <div class="section-title" style="font-size:13px;color:#555;margin-top:4px">🇺🇸 미국 핵심 지표</div>
+  <div class="section-title" style="font-size:12px;color:#888;margin:8px 0 6px">📈 금리 · 수익률 곡선</div>
+  <div class="chart-grid">
+    <div class="chart"><div id="m_rate_curve" style="height:300px;"></div></div>
+    <div class="chart"><div id="m_yield_sprd" style="height:300px;"></div></div>
+  </div>
+  <div class="chart-grid">
+    <div class="chart"><div id="m_real_yield" style="height:280px;"></div></div>
+    <div class="chart"><div id="m_fed_rate"   style="height:280px;"></div></div>
+  </div>
+  <div class="section-title" style="font-size:12px;color:#888;margin:8px 0 6px">💳 신용 · 달러</div>
+  <div class="chart-grid">
+    <div class="chart"><div id="m_hy_sprd" style="height:280px;"></div></div>
+    <div class="chart"><div id="m_dxy"     style="height:280px;"></div></div>
+  </div>
+  <div class="section-title" style="font-size:12px;color:#888;margin:8px 0 6px">🔥 인플레이션</div>
+  <div class="chart-grid">
+    <div class="chart"><div id="m_core_cpi" style="height:280px;"></div></div>
+    <div class="chart"><div id="m_core_pce" style="height:280px;"></div></div>
+  </div>
+  <div class="section-title" style="font-size:12px;color:#888;margin:8px 0 6px">🏭 고용 · 경기</div>
+  <div class="chart-grid">
+    <div class="chart"><div id="m_unrate"  style="height:280px;"></div></div>
+    <div class="chart"><div id="m_nfp_mom" style="height:280px;"></div></div>
+  </div>
+  <div class="chart"><div id="m_mich" style="height:250px;"></div></div>
+  <div class="section-title" style="font-size:12px;color:#888;margin:8px 0 6px">🏦 연준</div>
+  <div class="chart"><div id="m_fed_assets" style="height:290px;"></div></div>
+
+  <div class="section-title" style="font-size:13px;color:#555;margin-top:22px">🇰🇷 한국 핵심 지표</div>
+  <div class="chart-grid">
+    <div class="chart"><div id="m_kr_base"   style="height:270px;"></div></div>
+    <div class="chart"><div id="m_kr_10y"    style="height:270px;"></div></div>
+  </div>
+  <div class="chart-grid">
+    <div class="chart"><div id="m_kr_krwusd" style="height:270px;"></div></div>
+    <div class="chart"><div id="m_kr_unrate" style="height:270px;"></div></div>
+  </div>
+  <div class="chart"><div id="m_kr_cpi" style="height:250px;"></div></div>
 </div>
 
 <div class="footer">데이터: FinanceDataReader, FRED(미국 10Y), 네이버 금융/공공데이터/보조 스크래핑 · 투자 권유 아님</div>
@@ -2301,6 +2445,284 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
   }} catch (e) {{ console.error('fed debt plot:', e); showEmpty(id); }}
 }})();
 
+
+// ============================================================
+// 📡 MACRO TAB — chart rendering (plain JS, no template literals)
+// ============================================================
+(function(){{
+  function gv(k){{ return D['m_'+k]||{{dates:[],vals:[]}}; }}
+  function gkv(k){{ return D['m_kr_'+k]||{{dates:[],vals:[]}}; }}
+  function hasV(a){{ return Array.isArray(a)&&a.some(function(v){{return v!==null&&v!==undefined&&!isNaN(v);}}); }}
+
+  function mplt(id,traces,title,extra){{
+    var el=document.getElementById(id);
+    if(!el) return;
+    var valid=(traces||[]).filter(function(t){{return hasV(t.y);}});
+    if(!valid.length){{showEmpty(id,title+' 데이터 수집 중');return;}}
+    try{{
+      Plotly.newPlot(id,valid,Object.assign({{}},base,{{
+        title:{{text:title,font:{{size:13}}}},margin:{{t:48,r:90,b:36,l:58}}
+      }},extra||{{}}),{{displayModeBar:false,responsive:true}});
+    }}catch(e){{console.error(id,e);showEmpty(id);}}
+  }}
+
+  function ln(x,y,name,color,dash){{
+    return {{x:x,y:y,name:name,type:'scatter',mode:'lines',connectgaps:true,
+      line:{{color:color,width:2.2,dash:dash||'solid'}},
+      hovertemplate:'%{{x}}<br>%{{y:.2f}}<extra></extra>'}};
+  }}
+  function ar(x,y,name,color){{
+    return {{x:x,y:y,name:name,type:'scatter',mode:'lines',connectgaps:true,fill:'tozeroy',
+      line:{{color:color,width:2.0}},fillcolor:color.replace('rgb(','rgba(').replace(')',',0.12)'),
+      hovertemplate:'%{{x}}<br>%{{y:.2f}}<extra></extra>'}};
+  }}
+  function fmtv(v,dec){{return v!==null?v.toFixed(dec||2):'N/A';}}
+
+  // 1. 금리 2Y + 10Y
+  (function(){{
+    var t2=gv('ust2y');
+    var l2=t2.vals.length?t2.vals[t2.vals.length-1]:null;
+    var l10=D.ust10y&&D.ust10y.length?D.ust10y[D.ust10y.length-1]:null;
+    var traces=[ln(t2.dates,t2.vals,'2년물','#E24B4A')];
+    if(hasV(D.ust10y)) traces.push(ln(D.dates,D.ust10y,'10년물','#185FA5','dash'));
+    mplt('m_rate_curve',traces,
+      '미국 국채금리   2년물 '+fmtv(l2)+'%  /  10년물 '+fmtv(l10)+'%',
+      {{yaxis:{{title:'금리 (%)',ticksuffix:'%',gridcolor:'#F3F4F6'}}}});
+  }})();
+
+  // 2. 수익률 곡선 스프레드
+  (function(){{
+    var sp=gv('yield_sprd');
+    if(!sp.vals.length){{showEmpty('m_yield_sprd','10Y-2Y 스프레드 수집 중');return;}}
+    var lat=sp.vals[sp.vals.length-1];
+    var inv=lat<0;
+    var cols=sp.vals.map(function(v){{return v===null?'#aaa':v>=0?'rgba(29,158,117,0.75)':'rgba(226,75,74,0.75)';}});
+    Plotly.newPlot('m_yield_sprd',
+      [{{x:sp.dates,y:sp.vals,type:'bar',name:'10Y-2Y',marker:{{color:cols}},hovertemplate:'%{{x}}<br>%{{y:.2f}}%p<extra></extra>'}}],
+      Object.assign({{}},base,{{
+        title:{{text:'10Y-2Y 스프레드  '+lat.toFixed(2)+'%p  '+(inv?'⚠️ 역전 중':'✅ 정상'),font:{{size:13}}}},
+        margin:{{t:48,r:90,b:36,l:58}},
+        yaxis:{{title:'%p',gridcolor:'#F3F4F6',zeroline:true,zerolinecolor:'#333',zerolinewidth:1.5}},
+        shapes:[{{type:'rect',xref:'paper',x0:0,x1:1,y0:-99,y1:0,fillcolor:'rgba(226,75,74,0.05)',line:{{width:0}}}}],
+        annotations:[{{xref:'paper',yref:'y',x:1.01,y:0,text:'역전',showarrow:false,font:{{size:10,color:'#E24B4A'}},xanchor:'left'}}],
+        bargap:0.3
+      }}),{{displayModeBar:false,responsive:true}});
+  }})();
+
+  // 3. 실질금리
+  (function(){{
+    var rv=gv('real_yield');
+    var lat=rv.vals.length?rv.vals[rv.vals.length-1]:null;
+    mplt('m_real_yield',[ar(rv.dates,rv.vals,'실질금리 (TIPS 10Y)','rgb(83,74,183)')],
+      '실질금리 (TIPS 10Y)  '+fmtv(lat)+'%',
+      {{yaxis:{{title:'%',ticksuffix:'%',gridcolor:'#F3F4F6',zeroline:true,zerolinecolor:'#888',zerolinewidth:1.2}}}});
+  }})();
+
+  // 4. Fed Funds Rate
+  (function(){{
+    var fd=gv('fed_rate');
+    var lat=fd.vals.length?fd.vals[fd.vals.length-1]:null;
+    mplt('m_fed_rate',[ln(fd.dates,fd.vals,'Fed Funds Rate','#1D9E75')],
+      'Fed 기준금리 (실효)  현재 '+fmtv(lat)+'%',
+      {{yaxis:{{title:'%',ticksuffix:'%',gridcolor:'#F3F4F6'}}}});
+  }})();
+
+  // 5. 하이일드 스프레드
+  (function(){{
+    var hy=gv('hy_sprd');
+    if(!hy.vals.length){{showEmpty('m_hy_sprd','HY 스프레드 수집 중');return;}}
+    var lat=hy.vals[hy.vals.length-1];
+    var danger=lat>500,warn=lat>350;
+    Plotly.newPlot('m_hy_sprd',
+      [{{x:hy.dates,y:hy.vals,type:'scatter',mode:'lines',connectgaps:true,fill:'tozeroy',
+        line:{{color:'#D85A30',width:2.2}},fillcolor:'rgba(216,90,48,0.10)',
+        hovertemplate:'%{{x}}<br>%{{y:.0f}}bp<extra></extra>'}}],
+      Object.assign({{}},base,{{
+        title:{{text:'하이일드 스프레드  '+lat.toFixed(0)+'bp  '+(danger?'🔴 위험':warn?'🟡 주의':'✅ 안정'),font:{{size:13}}}},
+        margin:{{t:48,r:90,b:36,l:58}},
+        yaxis:{{title:'bp',gridcolor:'#F3F4F6'}},
+        shapes:[
+          {{type:'line',xref:'paper',x0:0,x1:1,y0:350,y1:350,line:{{color:'#BA7517',width:1,dash:'dot'}}}},
+          {{type:'line',xref:'paper',x0:0,x1:1,y0:600,y1:600,line:{{color:'#E24B4A',width:1,dash:'dot'}}}}
+        ],
+        annotations:[
+          {{xref:'paper',yref:'y',x:1.01,y:350,text:'주의(350)',showarrow:false,font:{{size:10,color:'#BA7517'}},xanchor:'left'}},
+          {{xref:'paper',yref:'y',x:1.01,y:600,text:'위험(600)',showarrow:false,font:{{size:10,color:'#E24B4A'}},xanchor:'left'}}
+        ]
+      }}),{{displayModeBar:false,responsive:true}});
+  }})();
+
+  // 6. 달러 광의지수
+  (function(){{
+    var dx=gv('dxy');
+    var lat=dx.vals.length?dx.vals[dx.vals.length-1]:null;
+    mplt('m_dxy',[ln(dx.dates,dx.vals,'달러 광의지수','#BA7517')],
+      '달러 광의지수 (Broad TWD)  '+fmtv(lat),
+      {{yaxis:{{title:'지수',gridcolor:'#F3F4F6'}}}});
+  }})();
+
+  // 7. Core CPI YoY
+  (function(){{
+    var cc=gv('core_cpi');
+    var lat=cc.vals.length?cc.vals[cc.vals.length-1]:null;
+    var danger=lat!==null&&lat>3.5,warn=lat!==null&&lat>2.5;
+    var rgb=danger?'226,75,74':warn?'186,117,23':'29,158,117';
+    mplt('m_core_cpi',[ar(cc.dates,cc.vals,'Core CPI YoY','rgb('+rgb+')')],
+      'Core CPI YoY  '+fmtv(lat)+'%  '+(danger?'🔴 과열':warn?'🟡 주의':'✅ 안정'),
+      {{yaxis:{{title:'YoY %',ticksuffix:'%',gridcolor:'#F3F4F6'}},
+        shapes:[
+          {{type:'line',xref:'paper',x0:0,x1:1,y0:2,y1:2,line:{{color:'#1D9E75',width:1.5,dash:'dot'}}}},
+          {{type:'line',xref:'paper',x0:0,x1:1,y0:3.5,y1:3.5,line:{{color:'#E24B4A',width:1,dash:'dot'}}}}
+        ],
+        annotations:[
+          {{xref:'paper',yref:'y',x:1.01,y:2,text:'목표(2%)',showarrow:false,font:{{size:10,color:'#1D9E75'}},xanchor:'left'}},
+          {{xref:'paper',yref:'y',x:1.01,y:3.5,text:'경보(3.5%)',showarrow:false,font:{{size:10,color:'#E24B4A'}},xanchor:'left'}}
+        ]}});
+  }})();
+
+  // 8. Core PCE YoY
+  (function(){{
+    var cp=gv('core_pce');
+    var lat=cp.vals.length?cp.vals[cp.vals.length-1]:null;
+    var danger=lat!==null&&lat>3.0,warn=lat!==null&&lat>2.5;
+    mplt('m_core_pce',[ar(cp.dates,cp.vals,'Core PCE YoY','rgb(83,74,183)')],
+      'Core PCE YoY (Fed 목표)  '+fmtv(lat)+'%  '+(danger?'🔴 과열':warn?'🟡 주의':'✅ 안정'),
+      {{yaxis:{{title:'YoY %',ticksuffix:'%',gridcolor:'#F3F4F6'}},
+        shapes:[
+          {{type:'line',xref:'paper',x0:0,x1:1,y0:2,y1:2,line:{{color:'#1D9E75',width:1.5,dash:'dot'}}}},
+          {{type:'line',xref:'paper',x0:0,x1:1,y0:3,y1:3,line:{{color:'#E24B4A',width:1,dash:'dot'}}}}
+        ],
+        annotations:[
+          {{xref:'paper',yref:'y',x:1.01,y:2,text:'목표(2%)',showarrow:false,font:{{size:10,color:'#1D9E75'}},xanchor:'left'}},
+          {{xref:'paper',yref:'y',x:1.01,y:3,text:'경보(3%)',showarrow:false,font:{{size:10,color:'#E24B4A'}},xanchor:'left'}}
+        ]}});
+  }})();
+
+  // 9. 실업률
+  (function(){{
+    var ur=gv('unrate');
+    var lat=ur.vals.length?ur.vals[ur.vals.length-1]:null;
+    var risky=lat!==null&&lat>5,warn=lat!==null&&lat>4.5;
+    mplt('m_unrate',[ar(ur.dates,ur.vals,'실업률','rgb(24,95,165)')],
+      '미국 실업률  '+fmtv(lat,1)+'%  '+(risky?'🔴 침체 위험':warn?'🟡 주의':'✅ 정상'),
+      {{yaxis:{{title:'%',ticksuffix:'%',gridcolor:'#F3F4F6'}},
+        shapes:[
+          {{type:'line',xref:'paper',x0:0,x1:1,y0:5,y1:5,line:{{color:'#E24B4A',width:1,dash:'dot'}}}},
+          {{type:'line',xref:'paper',x0:0,x1:1,y0:4,y1:4,line:{{color:'#BA7517',width:1,dash:'dot'}}}}
+        ],
+        annotations:[
+          {{xref:'paper',yref:'y',x:1.01,y:5,text:'위험(5%)',showarrow:false,font:{{size:10,color:'#E24B4A'}},xanchor:'left'}},
+          {{xref:'paper',yref:'y',x:1.01,y:4,text:'주의(4%)',showarrow:false,font:{{size:10,color:'#BA7517'}},xanchor:'left'}}
+        ]}});
+  }})();
+
+  // 10. 비농업 고용 MoM
+  (function(){{
+    var nf=gv('nfp');
+    if(!nf.vals.length){{showEmpty('m_nfp_mom','NFP 수집 중');return;}}
+    var mom=nf.vals.map(function(v,i){{
+      return (i===0||v===null||nf.vals[i-1]===null)?null:Math.round(v-nf.vals[i-1]);
+    }});
+    var cols=mom.map(function(v){{return v===null?'#aaa':v>0?'rgba(29,158,117,0.75)':'rgba(226,75,74,0.75)';}});
+    var filt=mom.filter(function(v){{return v!==null;}});
+    var latV=filt.length?filt[filt.length-1]:null;
+    Plotly.newPlot('m_nfp_mom',
+      [{{x:nf.dates,y:mom,type:'bar',name:'비농업 고용 MoM',marker:{{color:cols}},hovertemplate:'%{{x}}<br>%{{y:+,.0f}}명<extra></extra>'}}],
+      Object.assign({{}},base,{{
+        title:{{text:'비농업 고용 MoM  최근 '+(latV!==null?(latV>0?'+':'')+latV.toLocaleString()+'명':'N/A'),font:{{size:13}}}},
+        margin:{{t:48,r:40,b:36,l:68}},
+        yaxis:{{title:'명',gridcolor:'#F3F4F6',zeroline:true,zerolinecolor:'#555',zerolinewidth:1.5}},
+        bargap:0.35
+      }}),{{displayModeBar:false,responsive:true}});
+  }})();
+
+  // 11. 미시간 소비자신뢰지수
+  (function(){{
+    var mc=gv('mich');
+    var lat=mc.vals.length?mc.vals[mc.vals.length-1]:null;
+    var danger=lat!==null&&lat<60,warn=lat!==null&&lat<70;
+    mplt('m_mich',[ar(mc.dates,mc.vals,'미시간 소비자신뢰지수','rgb(29,158,117)')],
+      '미시간 소비자신뢰지수  '+fmtv(lat,1)+'  '+(danger?'🔴 침체':warn?'🟡 주의':'✅ 정상'),
+      {{yaxis:{{title:'지수',gridcolor:'#F3F4F6'}}}});
+  }})();
+
+  // 12. 연준 자산 (QE/QT)
+  (function(){{
+    var fa=gv('fed_assets');
+    if(!fa.vals.length){{showEmpty('m_fed_assets','연준 자산 수집 중');return;}}
+    var peak=Math.max.apply(null,fa.vals.filter(function(v){{return v!==null;}}));
+    var lat=fa.vals[fa.vals.length-1];
+    var isQT=lat<peak*0.98;
+    var c=isQT?'#185FA5':'#E24B4A';
+    var lbl=isQT?'🔵 QT 진행 중':'🔴 QE / 자산 확대';
+    Plotly.newPlot('m_fed_assets',
+      [{{x:fa.dates,y:fa.vals,type:'scatter',mode:'lines',connectgaps:true,fill:'tozeroy',
+        line:{{color:c,width:2.2}},fillcolor:isQT?'rgba(24,95,165,0.10)':'rgba(226,75,74,0.10)',
+        hovertemplate:'%{{x}}<br>$%{{y:,.0f}}B<extra></extra>'}}],
+      Object.assign({{}},base,{{
+        title:{{text:'연준 자산 규모  $'+(lat?(lat/1000).toFixed(1)+'T':'N/A')+'  '+lbl,font:{{size:13}}}},
+        margin:{{t:48,r:40,b:36,l:78}},
+        yaxis:{{title:'십억 USD',gridcolor:'#F3F4F6'}}
+      }}),{{displayModeBar:false,responsive:true}});
+  }})();
+
+  // ── 한국 매크로 ─────────────────────────────────────────────────
+
+  // KR 기준금리
+  (function(){{
+    var kb=gkv('base');
+    var lat=kb.vals.length?kb.vals[kb.vals.length-1]:null;
+    mplt('m_kr_base',[ln(kb.dates,kb.vals,'한국 기준금리','#1D9E75')],
+      '한국 기준금리  '+fmtv(lat)+'%',
+      {{yaxis:{{title:'%',ticksuffix:'%',gridcolor:'#F3F4F6'}}}});
+  }})();
+
+  // KR 10년물
+  (function(){{
+    var k10=gkv('10y');
+    var lat=k10.vals.length?k10.vals[k10.vals.length-1]:null;
+    mplt('m_kr_10y',[ln(k10.dates,k10.vals,'한국 10년물','#185FA5')],
+      '한국 국채 10년물  '+fmtv(lat)+'%',
+      {{yaxis:{{title:'%',ticksuffix:'%',gridcolor:'#F3F4F6'}}}});
+  }})();
+
+  // 원/달러 (기존 데이터 재활용)
+  (function(){{
+    var kw={{dates:D.krwusd_dates||[],vals:D.krwusd_vals||[]}};
+    var lat=kw.vals.length?kw.vals[kw.vals.length-1]:null;
+    var danger=lat!==null&&lat>1450,warn=lat!==null&&lat>1400;
+    mplt('m_kr_krwusd',[ln(kw.dates,kw.vals,'원/달러','#D85A30')],
+      '원/달러 환율  '+fmtv(lat,0)+'원  '+(danger?'🔴 위험(외국인이탈)':warn?'🟡 주의':'✅ 안정'),
+      {{yaxis:{{title:'원/달러 (₩)',gridcolor:'#F3F4F6'}},
+        shapes:[
+          {{type:'line',xref:'paper',x0:0,x1:1,y0:1400,y1:1400,line:{{color:'#BA7517',width:1,dash:'dot'}}}},
+          {{type:'line',xref:'paper',x0:0,x1:1,y0:1450,y1:1450,line:{{color:'#E24B4A',width:1,dash:'dot'}}}}
+        ],
+        annotations:[
+          {{xref:'paper',yref:'y',x:1.01,y:1400,text:'주의(1400)',showarrow:false,font:{{size:10,color:'#BA7517'}},xanchor:'left'}},
+          {{xref:'paper',yref:'y',x:1.01,y:1450,text:'위험(1450)',showarrow:false,font:{{size:10,color:'#E24B4A'}},xanchor:'left'}}
+        ]}});
+  }})();
+
+  // KR 실업률
+  (function(){{
+    var ku=gkv('unrate');
+    var lat=ku.vals.length?ku.vals[ku.vals.length-1]:null;
+    mplt('m_kr_unrate',[ar(ku.dates,ku.vals,'한국 실업률','rgb(83,74,183)')],
+      '한국 실업률  '+fmtv(lat,1)+'%',
+      {{yaxis:{{title:'%',ticksuffix:'%',gridcolor:'#F3F4F6'}}}});
+  }})();
+
+  // KR CPI
+  (function(){{
+    var kc=gkv('cpi');
+    var lat=kc.vals.length?kc.vals[kc.vals.length-1]:null;
+    mplt('m_kr_cpi',[ar(kc.dates,kc.vals,'한국 소비자물가지수','rgb(29,158,117)')],
+      '한국 CPI  '+fmtv(lat,1),
+      {{yaxis:{{title:'지수 (레벨)',gridcolor:'#F3F4F6'}}}});
+  }})();
+
+}})(); // end macro charts
 
 </script>
 </body>
