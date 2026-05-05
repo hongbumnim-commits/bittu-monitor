@@ -1720,16 +1720,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
   <div class="section-title" style="font-size:12px;color:#888;margin:8px 0 6px">🏦 연준</div>
   <div class="chart"><div id="m_fed_assets" style="height:290px;"></div></div>
 
-  <div class="section-title" style="font-size:13px;color:#555;margin-top:22px">🇰🇷 한국 핵심 지표</div>
-  <div class="chart-grid">
-    <div class="chart"><div id="m_kr_base"   style="height:270px;"></div></div>
-    <div class="chart"><div id="m_kr_10y"    style="height:270px;"></div></div>
-  </div>
-  <div class="chart-grid">
-    <div class="chart"><div id="m_kr_krwusd" style="height:270px;"></div></div>
-    <div class="chart"><div id="m_kr_unrate" style="height:270px;"></div></div>
-  </div>
-  <div class="chart"><div id="m_kr_cpi" style="height:250px;"></div></div>
+
 </div>
 
 <div class="footer">데이터: FinanceDataReader, FRED(미국 10Y), 네이버 금융/공공데이터/보조 스크래핑 · 투자 권유 아님</div>
@@ -2783,117 +2774,6 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
         margin:{{t:50,r:40,b:36,l:78}},
         yaxis:{{title:'십억 USD',gridcolor:'#F3F4F6'}}
       }}),{{displayModeBar:false,responsive:true}});
-  }})();
-
-  // ═══════════════════════════════════════════════════════════
-  // 🇰🇷 한국 매크로
-  // ═══════════════════════════════════════════════════════════
-
-  // KR 기준금리
-  (function(){{
-    var kb=gkv('base'), lv=lat(kb.vals);
-    if(!kb.vals.length){{showEmpty('m_kr_base','한국 기준금리 — FRED 수집 중');return;}}
-    var s=lv>=3.5?{{e:'🔴',l:'고금리 (성장 압박)'}}:
-          lv>=2.5?{{e:'🟡',l:'긴축 구간'}}:
-          lv<=1.5?{{e:'🟢',l:'완화적'}}:{{e:'🟢',l:'중립'}};
-    mplt('m_kr_base',[ln(kb.dates,kb.vals,'한국 기준금리','#1D9E75')],
-      '한국 기준금리   '+fv(lv)+'%   '+s.e+' '+s.l,
-      {{yaxis:{{title:'%',ticksuffix:'%',gridcolor:'#F3F4F6'}},
-        shapes:bd([{{y0:0,y1:1.5,c:'rgba(29,158,117,0.07)'}},
-                    {{y0:2.5,y1:3.5,c:'rgba(186,117,23,0.06)'}},
-                    {{y0:3.5,y1:99,c:'rgba(226,75,74,0.08)'}}]).concat(
-          hl([{{y:1.5,c:'#1D9E75'}},{{y:2.5,c:'#BA7517'}},{{y:3.5,c:'#E24B4A'}}])),
-        annotations:rl([{{y:1.5,t:'완화(1.5%)',c:'#1D9E75'}},
-                         {{y:2.5,t:'중립(2.5%)',c:'#BA7517'}},
-                         {{y:3.5,t:'긴축(3.5%)',c:'#E24B4A'}}])}});
-  }})();
-
-  // KR 10년물 — 없으면 안내 메시지
-  (function(){{
-    var k10=gkv('10y'), lv=lat(k10.vals);
-    if(!k10.vals.length){{
-      var el=document.getElementById('m_kr_10y');
-      if(el) el.innerHTML='<div style="height:100%;display:flex;align-items:center;justify-content:center;flex-direction:column;color:#888;font-size:13px;gap:6px">'
-        +'<span>📭 한국 10년물 국채금리</span>'
-        +'<span style="font-size:11px">FRED 데이터 수집 중 — 내일 업데이트 후 표시됩니다</span>'
-        +'<span style="font-size:10px;color:#aaa">대체 출처: 한국은행 ECOS 직접 조회</span></div>';
-      return;
-    }}
-    var s=lv>=4.0?{{e:'🔴',l:'고금리'}}:lv>=3.0?{{e:'🟡',l:'긴축'}}:{{e:'🟢',l:'안정'}};
-    mplt('m_kr_10y',[ln(k10.dates,k10.vals,'한국 10년물','#185FA5')],
-      '한국 국채 10년물   '+fv(lv)+'%   '+s.e+' '+s.l,
-      {{yaxis:{{title:'%',ticksuffix:'%',gridcolor:'#F3F4F6'}},
-        shapes:hl([{{y:3.0,c:'#BA7517'}},{{y:4.0,c:'#E24B4A'}}]),
-        annotations:rl([{{y:3.0,t:'주의(3%)',c:'#BA7517'}},{{y:4.0,t:'위험(4%)',c:'#E24B4A'}}])}});
-  }})();
-
-  // 원/달러
-  (function(){{
-    var kw={{dates:D.krwusd_dates||[],vals:D.krwusd_vals||[]}};
-    var lv=lat(kw.vals);
-    var s=lv>=1450?{{e:'🔴',l:'위험 (외국인 이탈 임계)'}}:
-          lv>=1400?{{e:'🟡',l:'주의 (약세 심화)'}}:
-          lv<=1250?{{e:'🟢',l:'원화 강세'}}:{{e:'🟢',l:'안정'}};
-    mplt('m_kr_krwusd',[ln(kw.dates,kw.vals,'원/달러','#D85A30')],
-      '원/달러 환율   '+fv(lv,0)+'원   '+s.e+' '+s.l,
-      {{yaxis:{{title:'원/달러 (₩)',gridcolor:'#F3F4F6'}},
-        shapes:bd([{{y0:0,y1:1250,c:'rgba(29,158,117,0.06)'}},
-                    {{y0:1400,y1:1450,c:'rgba(186,117,23,0.09)'}},
-                    {{y0:1450,y1:9999,c:'rgba(226,75,74,0.10)'}}]).concat(
-          hl([{{y:1250,c:'#1D9E75'}},{{y:1350,c:'#888'}},
-              {{y:1400,c:'#BA7517'}},{{y:1450,c:'#E24B4A'}}])),
-        annotations:rl([{{y:1250,t:'강세(1250)',c:'#1D9E75'}},
-                         {{y:1350,t:'보통(1350)',c:'#888'}},
-                         {{y:1400,t:'주의(1400)',c:'#BA7517'}},
-                         {{y:1450,t:'위험(1450)',c:'#E24B4A'}}])}});
-  }})();
-
-  // KR 실업률 — 없으면 안내
-  (function(){{
-    var ku=gkv('unrate'), lv=lat(ku.vals);
-    if(!ku.vals.length){{
-      var el=document.getElementById('m_kr_unrate');
-      if(el) el.innerHTML='<div style="height:100%;display:flex;align-items:center;justify-content:center;flex-direction:column;color:#888;font-size:13px;gap:6px">'
-        +'<span>📭 한국 실업률</span>'
-        +'<span style="font-size:11px">FRED 데이터 수집 중 (ILO 분기 데이터)</span>'
-        +'<span style="font-size:10px;color:#aaa">최근값: 약 2.8% (2026년 1분기 기준)</span></div>';
-      return;
-    }}
-    var s=lv>=4.5?{{e:'🔴',l:'높음'}}:lv>=3.5?{{e:'🟡',l:'주의'}}:{{e:'🟢',l:'정상'}};
-    mplt('m_kr_unrate',[ar(ku.dates,ku.vals,'한국 실업률','rgb(83,74,183)')],
-      '한국 실업률   '+fv(lv,1)+'%   '+s.e+' '+s.l,
-      {{yaxis:{{title:'%',ticksuffix:'%',gridcolor:'#F3F4F6'}},
-        shapes:hl([{{y:3.5,c:'#BA7517'}},{{y:4.5,c:'#E24B4A'}}]),
-        annotations:rl([{{y:3.5,t:'주의(3.5%)',c:'#BA7517'}},{{y:4.5,t:'위험(4.5%)',c:'#E24B4A'}}])}});
-  }})();
-
-  // KR CPI (YoY 계산해서 표시)
-  (function(){{
-    var kc=gkv('cpi');
-    if(!kc.vals.length){{showEmpty('m_kr_cpi','한국 CPI — 수집 중');return;}}
-    // 레벨 → YoY% 계산 (12개월 전 대비)
-    var yoyV=[], yoyD=[];
-    for(var i=12;i<kc.vals.length;i++){{
-      var v=kc.vals[i], prev=kc.vals[i-12];
-      if(v!==null&&prev!==null&&prev!==0){{
-        yoyV.push(parseFloat(((v/prev-1)*100).toFixed(2)));
-        yoyD.push(kc.dates[i]);
-      }}
-    }}
-    var lv=lat(yoyV);
-    var s=sig(lv,2.5,3.5,['안정 (한은 목표 근접)','주의 (목표 초과)','과열']);
-    if(!yoyV.length){{showEmpty('m_kr_cpi','한국 CPI YoY — 데이터 부족');return;}}
-    var rgb=lv>3.5?'226,75,74':lv>2.5?'186,117,23':'29,158,117';
-    mplt('m_kr_cpi',[ar(yoyD,yoyV,'한국 CPI YoY','rgb('+rgb+')')],
-      '한국 CPI YoY (전년동월비)   '+fv(lv)+'%   '+s.e+' '+s.l,
-      {{yaxis:{{title:'YoY %',ticksuffix:'%',gridcolor:'#F3F4F6'}},
-        shapes:bd([{{y0:0,y1:2.0,c:'rgba(29,158,117,0.07)'}},
-                    {{y0:2.5,y1:3.5,c:'rgba(186,117,23,0.07)'}},
-                    {{y0:3.5,y1:99,c:'rgba(226,75,74,0.09)'}}]).concat(
-          hl([{{y:2.0,c:'#1D9E75'}},{{y:2.5,c:'#BA7517'}},{{y:3.5,c:'#E24B4A'}}])),
-        annotations:rl([{{y:2.0,t:'한은목표(2%)',c:'#1D9E75'}},
-                         {{y:2.5,t:'주의(2.5%)',c:'#BA7517'}},
-                         {{y:3.5,t:'과열(3.5%)',c:'#E24B4A'}}])}});
   }})();
 
 }})(); // end macro charts v2
