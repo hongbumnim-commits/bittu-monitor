@@ -2582,25 +2582,29 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
   }})();
 
   // 10. 비농업 고용 MoM
+  // FRED PAYEMS 단위: 천명. 차이 150 = +15만명
   (function(){{
     var nf=gm('nfp');
     if(!nf.vals.length){{showEmpty('m_nfp_mom','비농업 고용 — 수집 중');return;}}
     var mom=nf.vals.map(function(v,i){{
-      return (i===0||v===null||nf.vals[i-1]===null)?null:Math.round(v-nf.vals[i-1]);
+      return (i===0||v===null||nf.vals[i-1]===null)?null:parseFloat((v-nf.vals[i-1]).toFixed(1));
     }});
-    var cols=mom.map(function(v){{return v===null?'#aaa':v>=150000?'rgba(29,158,117,0.80)':v>=0?'rgba(29,158,117,0.45)':'rgba(226,75,74,0.75)';}});
+    var cols=mom.map(function(v){{
+      return v===null?'#aaa':v>=150?'rgba(29,158,117,0.80)':v>=0?'rgba(29,158,117,0.45)':'rgba(226,75,74,0.75)';
+    }});
     var filt=mom.filter(function(v){{return v!==null;}});
     var latV=filt.length?filt[filt.length-1]:null;
-    var latK=latV!==null?Math.round(latV/1000):null;
-    var s=latV<0?{{e:'🔴',l:'고용 감소'}}:latV<100000?{{e:'🟡',l:'약한 증가 (<10만)'}}:{{e:'🟢',l:'양호 (>15만)'}};
+    var s=latV===null?{{e:'⚪',l:'N/A'}}:latV<0?{{e:'🔴',l:'고용 감소'}}:latV<100?{{e:'🟡',l:'약한 증가 (<10만)'}}:{{e:'🟢',l:'양호 (>15만)'}};
+    var disp=latV!==null?(latV>0?'+':'')+latV.toFixed(0)+'k명':'N/A';
     Plotly.newPlot('m_nfp_mom',
-      [{{x:nf.dates,y:mom,type:'bar',name:'NFP MoM',marker:{{color:cols}},hovertemplate:'%{{x}}<br>%{{y:+,.0f}}명<extra></extra>'}}],
+      [{{x:nf.dates,y:mom,type:'bar',name:'NFP MoM (천명)',marker:{{color:cols}},
+        hovertemplate:'%{{x}}<br>%{{y:+.0f}}k명<extra></extra>'}}],
       Object.assign({{}},base,{{
-        title:{{text:'비농업 고용 MoM   최근 '+(latK!==null?(latK>0?'+':'')+latK+'k명':'N/A')+'   '+s.e+' '+s.l,font:{{size:13}}}},
+        title:{{text:'비농업 고용 MoM   최근 '+disp+'   '+s.e+' '+s.l,font:{{size:13}}}},
         margin:{{t:50,r:96,b:36,l:75}},
-        yaxis:{{title:'명',gridcolor:'#F3F4F6',zeroline:true,zerolinecolor:'#555',zerolinewidth:1.5}},
-        shapes:hlines([{{y:150000,c:'#1D9E75'}},{{y:0,c:'#555',d:'solid'}}]),
-        annotations:hlabels([{{y:150000,t:'양호(+150k)',c:'#1D9E75'}},{{y:0,t:'기준선',c:'#555'}}]),
+        yaxis:{{title:'천명 (k)',gridcolor:'#F3F4F6',zeroline:true,zerolinecolor:'#555',zerolinewidth:1.5}},
+        shapes:hlines([{{y:150,c:'#1D9E75'}},{{y:100,c:'#BA7517'}},{{y:0,c:'#555',d:'solid'}}]),
+        annotations:hlabels([{{y:150,t:'양호(+150k)',c:'#1D9E75'}},{{y:100,t:'보통(+100k)',c:'#BA7517'}},{{y:0,t:'기준선',c:'#555'}}]),
         bargap:0.35
       }}),{{displayModeBar:false,responsive:true}});
   }})();
