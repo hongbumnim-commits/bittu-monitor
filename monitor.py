@@ -374,6 +374,51 @@ def fetch_investing_history(url, name, days=LOOKBACK_DAYS):
         print(f"  [warn] investing {name}: {e}")
     return pd.Series(dtype=float, name=name)
 
+
+def fetch_sk_nav_info():
+    """야후 파이낸스 API를 이용해 SK하이닉스와 SK스퀘어의 가격 및 시총을 조회하고 NAV 할인율을 계산"""
+    try:
+        url = "https://query2.finance.yahoo.com/v7/finance/quote?symbols=000660.KS,402340.KS"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        r = requests.get(url, headers=headers, timeout=15)
+        data = r.json()
+        res = {}
+        if "quoteResponse" in data and "result" in data["quoteResponse"]:
+            for res_obj in data['quoteResponse']['result']:
+                sym = res_obj.get('symbol')
+                res[sym] = {
+                    'price': res_obj.get('regularMarketPrice', 0),
+                    'marketCap': res_obj.get('marketCap', 0)
+                }
+
+        hynix = res.get('000660.KS', {})
+        square = res.get('402340.KS', {})
+
+        hynix_price = hynix.get('price', 0)
+        hynix_cap = hynix.get('marketCap', 0)
+        square_price = square.get('price', 0)
+        square_cap = square.get('marketCap', 0)
+
+        if hynix_price > 0 and square_cap > 0:
+            shares_held = 146113730  # SK스퀘어의 하이닉스 보유 주식수 (20.5%)
+            nav_value = hynix_price * shares_held
+            discount = (nav_value - square_cap) / nav_value * 100
+            return {
+                'hynix_price': hynix_price,
+                'hynix_cap': hynix_cap,
+                'square_price': square_price,
+                'square_cap': square_cap,
+                'discount': discount
+            }
+    except Exception as e:
+        print(f"  [warn] fetch_sk_nav_info failed: {e}")
+    return None
+
+
 def fetch_sector_basket(tickers):
     """섹터 종목 바스켓을 Base 100 누적 추세로 반환."""
     closes = []
@@ -836,12 +881,15 @@ def update_data():
 
     macro_us = safe("macro_us", fetch_macro_us, default={})
     macro_kr = safe("macro_kr", fetch_macro_kr, default={})
+    sk_nav = safe("sk_nav", fetch_sk_nav_info, default=None)
+
     extras = {
         "us_margin_debt":us_margin_debt,"kr_power_basket":kr_power_basket,
         "kr_ship_basket":kr_ship_basket,"m7_basket":m7_basket,
         "us_indices_basket":us_indices_basket,"storage_basket":storage_basket,
         "fed_debt":fed_debt,"krwusd":krwusd,"cnn_fg":cnn_fg,
         "macro_us":macro_us,"macro_kr":macro_kr,
+        "sk_nav":sk_nav,
     }
     return combined, extras
 
@@ -1539,8 +1587,6 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     js_data["m_kr_base"] = _mks("kr_base_rate")
     js_data["m_kr_10y"]  = _mks("kr_10y")
 
-
-
     last_date = df_plot["date"].iloc[-1].strftime("%Y년 %m월 %d일") if not df_plot.empty else "대기"
     kr_color = COLOR.get(signals["label_kr"], "#888")
     us_color = COLOR.get(signals["label_us"], "#888")
@@ -1561,6 +1607,31 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     us_cards = render_signals(signals["us"])
     regime_kr_html = render_regime_block(regime_kr, "코스피 추세 전망")
     regime_us_html = render_regime_block(regime_us, "S&P 500 추세 전망")
+
+    # --- NAV 할인율 섹션 HTML 동적 생성 ---
+    sk_nav = extras.get("sk_nav")
+    sk_nav_html = ""
+    if sk_nav:
+        sk_nav_html = f"""
+      <div class="section-title">SK스퀘어 NAV 할인율 (당일 실시간/종가 기준)</div>
+      <div class="regime-grid" style="margin-bottom: 20px;">
+        <div class="regime-card" style="border-top-color: #185FA5;">
+          <div class="regime-name">SK하이닉스</div>
+          <div class="regime-value">{sk_nav['hynix_price']:,.0f}원</div>
+          <div class="regime-reasons">시총: {sk_nav['hynix_cap']/1000000000000:,.1f}조원</div>
+        </div>
+        <div class="regime-card" style="border-top-color: #DC2626;">
+          <div class="regime-name">SK스퀘어</div>
+          <div class="regime-value">{sk_nav['square_price']:,.0f}원</div>
+          <div class="regime-reasons">시총: {sk_nav['square_cap']/1000000000000:,.1f}조원</div>
+        </div>
+        <div class="regime-card" style="border-top-color: #7C3AED;">
+          <div class="regime-name">NAV 할인율</div>
+          <div class="regime-value">{sk_nav['discount']:.2f}%</div>
+          <div class="regime-reasons">보유지분 1.46억주 적용</div>
+        </div>
+      </div>
+        """
 
     html = f"""<!DOCTYPE html>
 <html lang="ko">
@@ -1615,6 +1686,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
 
 <div id="pane-kr" class="pane active">
   {regime_kr_html}
+  {sk_nav_html}
   <div class="section-title">단기 위험 신호 (일간)</div>
   <div class="overall" style="border-left: 6px solid {kr_color};">
     <div><div class="overall-label">한국 위험도 점수</div><div class="overall-value" style="color: {kr_color};">{signals['label_kr']}</div></div>
