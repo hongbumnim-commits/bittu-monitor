@@ -3130,7 +3130,7 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
     'NVDA','MSFT','AVGO','AMD'
   ];
 
-  // 종목별 고유 색상 { price: 진한색, eps: 연한색 }
+  // 종목별 고유 색상 {{ price: 진한색, eps: 연한색 }}
   var C = {{
     '005930': {{p:'#0A2A6E', e:'#7B9FD4'}},   // 삼성전자  — 네이비
     '009150': {{p:'#B22222', e:'#E89090'}},   // 삼성전기  — 크림슨
