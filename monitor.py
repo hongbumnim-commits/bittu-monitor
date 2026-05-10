@@ -846,8 +846,30 @@ EPS_QUARTERLY_DATA = {
             (2026,3,0.84),(2026,6,1.59),(2026,9,1.88),(2026,12,2.48),(2027,3,2.43),
         ],
     },
-}
-
+    "INTC": {
+        "name": "인텔", "fdr": "INTC",
+        "data": [
+            (2024,6,-0.38),(2024,9,-3.88),(2024,12,-0.03),
+            (2025,3,-0.19),(2025,6,-0.67),(2025,9,0.90),(2025,12,-0.12),
+            (2026,3,-0.73),(2026,6,0.20),(2026,9,0.26),(2026,12,0.29),(2027,3,0.24),
+        ],
+    },
+    "QCOM": {
+        "name": "퀄컴", "fdr": "QCOM",
+        "data": [
+            (2025,3,2.52),(2025,6,2.43),(2025,9,-2.89),(2025,12,2.78),
+            (2026,3,6.88),(2026,6,2.22),(2026,9,2.39),(2026,12,2.60),(2027,3,2.53),
+        ],
+    },
+    "ARM": {
+        "name": "ARM홀딩스", "fdr": "ARM",
+        "data": [
+            (2024,6,0.29),(2024,9,0.26),(2024,12,0.39),(2025,3,0.31),
+            (2025,6,0.24),(2025,9,0.29),(2025,12,0.37),(2026,3,0.36),
+            (2026,6,0.34),(2026,9,0.39),(2026,12,0.46),(2027,3,0.50),
+        ],
+    },
+} 
 
 # ================================================================
 # EPS 추이2 — 기준일 2026/01, 실적(solid) + 가이던스(dotted), ~2028년
@@ -1041,6 +1063,42 @@ EPS_QUARTERLY_DATA_V2 = {
             (2026,6,1.59),(2026,9,1.88),(2026,12,2.48),(2027,3,2.43),
             (2027,6,2.70),(2027,9,3.00),(2027,12,3.30),
             (2028,3,3.20),(2028,6,3.50),
+        ],
+    },
+    "INTC": {
+        "name": "인텔", "fdr": "INTC",
+        "actual": [
+            (2025,3,-0.19),(2025,6,-0.67),(2025,9,0.90),(2025,12,-0.12),
+            (2026,3,-0.73),
+        ],
+        "guidance": [
+            (2026,6,0.20),(2026,9,0.26),(2026,12,0.29),(2027,3,0.24),
+            (2027,6,0.28),(2027,9,0.33),(2027,12,0.38),
+            (2028,3,0.42),(2028,6,0.45),
+        ],
+    },
+    "QCOM": {
+        "name": "퀄컴", "fdr": "QCOM",
+        "actual": [
+            (2025,6,2.43),(2025,9,-2.89),(2025,12,2.78),
+            (2026,3,6.88),
+        ],
+        "guidance": [
+            (2026,6,2.22),(2026,9,2.39),(2026,12,2.60),(2027,3,2.53),
+            (2027,6,2.70),(2027,9,2.85),(2027,12,3.00),
+            (2028,3,3.10),(2028,6,3.20),
+        ],
+    },
+    "ARM": {
+        "name": "ARM홀딩스", "fdr": "ARM",
+        "actual": [
+            (2025,6,0.24),(2025,9,0.29),(2025,12,0.37),
+            (2026,3,0.36),
+        ],
+        "guidance": [
+            (2026,6,0.34),(2026,9,0.39),(2026,12,0.46),(2027,3,0.50),
+            (2027,6,0.48),(2027,9,0.55),(2027,12,0.62),
+            (2028,3,0.65),(2028,6,0.68),
         ],
     },
 }
@@ -2147,31 +2205,41 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
 
         def _norm_b100(s, base_date):
             """
-            Base 100 normalisation from first value on/after base_date.
-            음수 EPS 처리:
-              - base 값이 양수면 일반 Base 100 (s / base * 100)
-              - base 값이 음수이거나 0이면 절대 변화량 기준
-                (100 + (s - base) / abs(base) * 100) → base=100, 개선이면↑
+            Base 100 정규화. date/datetime 인덱스 타입 불일치 방지를 위해
+            인덱스를 문자열(YYYY-MM-DD)로 통일한 뒤 비교.
+            음수 base 값: 절대 변화량 기준 정규화.
             """
             if s is None or s.empty:
                 return [], []
-            s = pd.to_numeric(s, errors="coerce").dropna().sort_index()
-            s = s[s.index >= base_date]
+            s = pd.to_numeric(s, errors="coerce").dropna()
             if s.empty:
                 return [], []
-            base_val = s.iloc[0]
+            # ── 인덱스 → 문자열 통일 (date/datetime/str 모두 처리) ──────────
+            try:
+                new_idx = []
+                for i in s.index:
+                    if hasattr(i, "strftime"):
+                        new_idx.append(i.strftime("%Y-%m-%d"))
+                    else:
+                        new_idx.append(str(i)[:10])
+                s = pd.Series(s.values, index=new_idx)
+            except Exception:
+                pass
+            s = s.sort_index()
+            base_str = base_date.strftime("%Y-%m-%d") if hasattr(base_date, "strftime") else str(base_date)[:10]
+            s = s[s.index >= base_str]
+            if s.empty:
+                return [], []
+            base_val = float(s.iloc[0])
             if pd.isna(base_val):
                 return [], []
             if base_val == 0:
-                # base가 0이면 절대값 기준으로 +100 오프셋
                 normed = s - s.iloc[0] + 100
             elif base_val < 0:
-                # 적자 기준: 개선(부채 감소)이면 올라감
                 normed = 100 + (s - base_val) / abs(base_val) * 100
             else:
-                normed = (s / base_val) * 100
-            return [d.strftime("%Y-%m-%d") for d in normed.index], \
-                   [round(float(v), 2) for v in normed]
+                normed = s / base_val * 100
+            return list(normed.index), [round(float(v), 2) for v in normed]
 
         pd_dates, pd_vals = _norm_b100(price_s, base_dt)
         ed_dates, ed_vals = _norm_b100(eps_s,   base_dt)
@@ -2435,6 +2503,9 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     <div class="chart"><div id="eps_MSFT"  style="height:320px;"></div></div>
     <div class="chart"><div id="eps_AVGO"  style="height:320px;"></div></div>
     <div class="chart"><div id="eps_AMD"   style="height:320px;"></div></div>
+    <div class="chart"><div id="eps_INTC"  style="height:320px;"></div></div>
+    <div class="chart"><div id="eps_QCOM"  style="height:320px;"></div></div>
+    <div class="chart"><div id="eps_ARM"   style="height:320px;"></div></div>
   </div>
 </div>
 
@@ -2464,6 +2535,9 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     <div class="chart"><div id="eps2_MSFT"  style="height:340px;"></div></div>
     <div class="chart"><div id="eps2_AVGO"  style="height:340px;"></div></div>
     <div class="chart"><div id="eps2_AMD"   style="height:340px;"></div></div>
+    <div class="chart"><div id="eps2_INTC"  style="height:340px;"></div></div>
+    <div class="chart"><div id="eps2_QCOM"  style="height:340px;"></div></div>
+    <div class="chart"><div id="eps2_ARM"   style="height:340px;"></div></div>
   </div>
 </div>
 
@@ -3497,7 +3571,8 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
     '005930','009150','353200','000660',
     '267260','062040','298040','010120',
     'SNDK','MU','STX','GOOGL',
-    'NVDA','MSFT','AVGO','AMD'
+    'NVDA','MSFT','AVGO','AMD',
+    'INTC','QCOM','ARM'
   ];
   var C = {{
     '005930':{{p:'#0A2A6E',e:'#7B9FD4'}},'009150':{{p:'#B22222',e:'#E89090'}},
@@ -3508,6 +3583,8 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
     'STX':{{p:'#A00000',e:'#E08080'}},'GOOGL':{{p:'#1A56DB',e:'#9CB8FB'}},
     'NVDA':{{p:'#5A8A00',e:'#B8DB7A'}},'MSFT':{{p:'#0078D4',e:'#7BD1F7'}},
     'AVGO':{{p:'#990000',e:'#E87878'}},'AMD':{{p:'#C00020',e:'#F08090'}},
+    'INTC':{{p:'#0071C5',e:'#80B8E2'}},'QCOM':{{p:'#3253DC',e:'#9AAEED'}},
+    'ARM':{{p:'#2B3F6C',e:'#8D9DC0'}},
   }};
 
   var basket2 = D.eps2_basket || {{}};
@@ -3636,27 +3713,22 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
     '005930','009150','353200','000660',
     '267260','062040','298040','010120',
     'SNDK','MU','STX','GOOGL',
-    'NVDA','MSFT','AVGO','AMD'
+    'NVDA','MSFT','AVGO','AMD',
+    'INTC','QCOM','ARM'
   ];
 
   // 종목별 고유 색상 {{ price: 진한색, eps: 연한색 }}
   var C = {{
-    '005930': {{p:'#0A2A6E', e:'#7B9FD4'}},   // 삼성전자  — 네이비
-    '009150': {{p:'#B22222', e:'#E89090'}},   // 삼성전기  — 크림슨
-    '353200': {{p:'#1A7A4A', e:'#7DC0A0'}},   // 대덕전자  — 포레스트 그린
-    '000660': {{p:'#6A0DAD', e:'#BF92CB'}},   // SK하이닉스 — 퍼플
-    '267260': {{p:'#CC5500', e:'#EBA87A'}},   // HD현대일렉트릭 — 번트오렌지
-    '062040': {{p:'#1A6B8A', e:'#7ABFDA'}},   // 산일전기   — 스틸블루
-    '298040': {{p:'#7B4F00', e:'#C4906B'}},   // 효성중공업  — 새들브라운
-    '010120': {{p:'#2E4057', e:'#8AA0B5'}},   // LS ELECTRIC — 다크슬레이트
-    'SNDK':   {{p:'#E06B00', e:'#F5C38A'}},   // 샌디스크   — 오렌지
-    'MU':     {{p:'#007A7A', e:'#7DE4D0'}},   // 마이크론   — 틸
-    'STX':    {{p:'#A00000', e:'#E08080'}},   // 씨게이트   — 다크레드
-    'GOOGL':  {{p:'#1A56DB', e:'#9CB8FB'}},   // 구글       — 구글블루
-    'NVDA':   {{p:'#5A8A00', e:'#B8DB7A'}},   // 엔비디아   — NVIDIA그린
-    'MSFT':   {{p:'#0078D4', e:'#7BD1F7'}},   // 마이크로소프트 — MS블루
-    'AVGO':   {{p:'#990000', e:'#E87878'}},   // 브로드컴   — 다크레드
-    'AMD':    {{p:'#C00020', e:'#F08090'}},   // AMD        — AMD레드
+    '005930':{{p:'#0A2A6E',e:'#7B9FD4'}},'009150':{{p:'#B22222',e:'#E89090'}},
+    '353200':{{p:'#1A7A4A',e:'#7DC0A0'}},'000660':{{p:'#6A0DAD',e:'#BF92CB'}},
+    '267260':{{p:'#CC5500',e:'#EBA87A'}},'062040':{{p:'#1A6B8A',e:'#7ABFDA'}},
+    '298040':{{p:'#7B4F00',e:'#C4906B'}},'010120':{{p:'#2E4057',e:'#8AA0B5'}},
+    'SNDK':{{p:'#E06B00',e:'#F5C38A'}},'MU':{{p:'#007A7A',e:'#7DE4D0'}},
+    'STX':{{p:'#A00000',e:'#E08080'}},'GOOGL':{{p:'#1A56DB',e:'#9CB8FB'}},
+    'NVDA':{{p:'#5A8A00',e:'#B8DB7A'}},'MSFT':{{p:'#0078D4',e:'#7BD1F7'}},
+    'AVGO':{{p:'#990000',e:'#E87878'}},'AMD':{{p:'#C00020',e:'#F08090'}},
+    'INTC':{{p:'#0071C5',e:'#80B8E2'}},'QCOM':{{p:'#3253DC',e:'#9AAEED'}},
+    'ARM':{{p:'#2B3F6C',e:'#8D9DC0'}},
   }};
 
   var basket = D.eps_basket || {{}};
