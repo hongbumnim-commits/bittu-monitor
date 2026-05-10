@@ -853,9 +853,10 @@ def _build_daily_eps_from_quarterly(data_list):
     """
     분기별 EPS [(year, month, eps), ...] → 일별 선형보간 시계열.
     - 분기말(해당 월 마지막 날) 기준으로 날짜 생성
-    - 분기 사이: 선형 보간 (매끄러운 곡선)
-    - 데이터 이전 구간: bfill로 EPS_BASE_DATE(2024-01-01)까지 연장
-    - 데이터 이후 구간: 마지막 값 ffill
+    - 분기 사이(추정치 포함): 선형 보간으로 매끄러운 곡선
+    - 인덱스를 '데이터 마지막 날'까지 확장 후 오늘 날짜로 잘라냄
+      → 오늘이 미래 분기 데이터 이전이어도 추정치 구간을 정확히 보간
+    - BASE_DATE 이전: bfill
     Returns: pd.Series, index=date 객체
     """
     import calendar
@@ -865,142 +866,33 @@ def _build_daily_eps_from_quarterly(data_list):
     pairs = []
     for year, month, eps in sorted(data_list):
         last_day = calendar.monthrange(year, month)[1]
-        pairs.append((pd.Timestamp(dt.date(year, month, last_day)), eps))
+        pairs.append((pd.Timestamp(dt.date(year, month, last_day)), float(eps)))
 
     ts_idx = pd.DatetimeIndex([p[0] for p in pairs])
     values  = [p[1] for p in pairs]
     s = pd.Series(values, index=ts_idx).sort_index()
 
-    # 오늘까지 일별 인덱스 생성
-    today_ts  = pd.Timestamp(TODAY)
-    base_ts   = pd.Timestamp(EPS_BASE_DATE)
-    start_ts  = min(s.index.min(), base_ts)
-    daily_idx = pd.date_range(start_ts, today_ts, freq="D")
+    today_ts = pd.Timestamp(TODAY)
+    base_ts  = pd.Timestamp(EPS_BASE_DATE)
 
-    s_daily = s.reindex(daily_idx)
-    # 알려진 분기점 사이: 선형 보간 / 마지막 이후: ffill / 처음 이전: bfill
-    s_daily = s_daily.interpolate(method="linear").ffill().bfill()
+    # 인덱스: BASE_DATE ~ max(오늘, 마지막 데이터 날짜)
+    # 추정치 포함 미래 구간까지 확장해야 보간이 제대로 됨
+    end_ts   = max(today_ts, s.index.max())
+    start_ts = min(s.index.min(), base_ts)
 
-    # BASE_DATE 이전은 필요 없음
+    daily_idx = pd.date_range(start_ts, end_ts, freq="D")
+    s_daily   = s.reindex(daily_idx)
+
+    # 알려진 분기점 사이: 선형 보간 / 처음 이전: bfill
+    s_daily = s_daily.interpolate(method="linear").bfill()
+
+    # 오늘 이후 미래 구간 제거 → 오늘까지만 표시
+    s_daily = s_daily[s_daily.index <= today_ts]
+    # BASE_DATE 이전 제거
     s_daily = s_daily[s_daily.index >= base_ts]
+
     s_daily.index = s_daily.index.date
     return s_daily
-
-
-def _fetch_ttm_eps_yfinance(yahoo_symbol):
-    """
-    yfinance로 분기별 EPS를 수집해 TTM EPS 일별 시계열 반환.
-    - 소스 우선순위: earnings_history → quarterly_income_stmt → quarterly_earnings
-    - 분기 사이를 선형 보간(linear interpolation)해 매끄러운 곡선 생성
-    - 최소 4분기 이상 확보 시도 (TTM = 4분기 합산)
-    인덱스: date 객체, 값: TTM EPS (현지통화 기준).
-    """
-    try:
-        import yfinance as yf
-        t = yf.Ticker(yahoo_symbol)
-        eps_quarterly = None   # pd.Series, index=Timestamp, value=quarterly EPS
-
-        # ── 소스 1: earnings_history (가장 많은 분기 제공) ──────────────
-        try:
-            eh = t.earnings_history
-            if eh is not None and not eh.empty:
-                for col in ["epsActual", "Reported EPS", "EPS Actual"]:
-                    if col in eh.columns:
-                        s = pd.to_numeric(eh[col], errors="coerce").dropna()
-                        s.index = pd.to_datetime(s.index)
-                        s = s.sort_index()
-                        if len(s) >= 4:
-                            eps_quarterly = s
-                            print(f"    eps src=earnings_history ({len(s)}q) {yahoo_symbol}")
-                            break
-        except Exception as e:
-            print(f"    [info] earnings_history {yahoo_symbol}: {e}")
-
-        # ── 소스 2: quarterly_income_stmt (신버전 yfinance v0.2+) ────────
-        if eps_quarterly is None or len(eps_quarterly) < 4:
-            try:
-                qi = t.quarterly_income_stmt
-                if qi is not None and not qi.empty:
-                    for row_name in ["Diluted EPS", "Basic EPS"]:
-                        if row_name in qi.index:
-                            s = pd.to_numeric(qi.loc[row_name], errors="coerce").dropna()
-                            s.index = pd.to_datetime(s.index)
-                            s = s.sort_index()
-                            if len(s) >= 4:
-                                eps_quarterly = s
-                                print(f"    eps src=quarterly_income_stmt ({len(s)}q) {yahoo_symbol}")
-                                break
-            except Exception as e:
-                print(f"    [info] quarterly_income_stmt {yahoo_symbol}: {e}")
-
-        # ── 소스 3: quarterly_earnings (구버전 yfinance) ─────────────────
-        if eps_quarterly is None or len(eps_quarterly) < 4:
-            try:
-                qe = t.quarterly_earnings
-                if qe is not None and not qe.empty:
-                    for col in ["Earnings", "EPS", "EPS Actual", "Reported EPS"]:
-                        if col in qe.columns:
-                            s = pd.to_numeric(qe[col], errors="coerce").dropna()
-                            s.index = pd.to_datetime(s.index)
-                            s = s.sort_index()
-                            if len(s) >= 4:
-                                eps_quarterly = s
-                                print(f"    eps src=quarterly_earnings ({len(s)}q) {yahoo_symbol}")
-                                break
-            except Exception as e:
-                print(f"    [info] quarterly_earnings {yahoo_symbol}: {e}")
-
-        # ── 소스 4: get_earnings_dates로 실적 발표일 기준 EPS ────────────
-        if eps_quarterly is None or len(eps_quarterly) < 4:
-            try:
-                ed = t.get_earnings_dates(limit=24)  # 최대 6년치
-                if ed is not None and not ed.empty:
-                    for col in ["Reported EPS", "EPS Estimate", "epsActual"]:
-                        if col in ed.columns:
-                            s = pd.to_numeric(ed[col], errors="coerce").dropna()
-                            s.index = pd.to_datetime(s.index)
-                            s = s.sort_index()
-                            # 미래 예정치 제거 (오늘 이후)
-                            s = s[s.index <= pd.Timestamp(TODAY)]
-                            if len(s) >= 4:
-                                eps_quarterly = s
-                                print(f"    eps src=get_earnings_dates ({len(s)}q) {yahoo_symbol}")
-                                break
-            except Exception as e:
-                print(f"    [info] get_earnings_dates {yahoo_symbol}: {e}")
-
-        if eps_quarterly is None or len(eps_quarterly) < 4:
-            print(f"  [warn] ttm_eps {yahoo_symbol}: 분기 데이터 부족 ({len(eps_quarterly) if eps_quarterly is not None else 0}q)")
-            return pd.Series(dtype=float)
-
-        # ── TTM = 4분기 rolling sum ──────────────────────────────────────
-        eps_quarterly = eps_quarterly.sort_index()
-        ttm = eps_quarterly.rolling(4, min_periods=4).sum().dropna()
-        if ttm.empty:
-            return pd.Series(dtype=float)
-
-        # ── 일별 시계열 생성: 선형 보간으로 매끄럽게 ───────────────────
-        today_ts = pd.Timestamp(TODAY)
-        daily_idx = pd.date_range(ttm.index.min(), today_ts, freq="D")
-        ttm_daily = ttm.reindex(daily_idx)
-        # 마지막 값 이후는 최신 TTM으로 forward-fill, 중간 구간은 선형 보간
-        ttm_daily = ttm_daily.interpolate(method="linear").ffill()
-
-        # ── EPS_BASE_DATE 이후로 자르기 ──────────────────────────────────
-        base_ts = pd.Timestamp(EPS_BASE_DATE)
-        ttm_daily = ttm_daily[ttm_daily.index >= base_ts]
-        if ttm_daily.empty:
-            return pd.Series(dtype=float)
-
-        ttm_daily.index = ttm_daily.index.date
-        print(f"    ttm_eps {yahoo_symbol}: {len(ttm_daily)} rows, "
-              f"first={float(ttm_daily.iloc[0]):.3f} latest={float(ttm_daily.iloc[-1]):.3f}")
-        return ttm_daily.rename(yahoo_symbol)
-
-    except Exception as e:
-        print(f"  [warn] ttm_eps {yahoo_symbol}: {e}")
-        import traceback; traceback.print_exc()
-        return pd.Series(dtype=float)
 
 
 def _fetch_price_since(fdr_symbol, start=EPS_BASE_DATE, days=None):
