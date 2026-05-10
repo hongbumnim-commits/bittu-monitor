@@ -708,7 +708,7 @@ def fetch_storage_basket():
 # EPS 탭 — 종목별 TTM EPS vs 주가 추이 (Base 100, '24/01 기준)
 # ================================================================
 
-EPS_BASE_DATE = "2024-01-01"   # Base 100 기준일
+EPS_BASE_DATE = "2025-01-01"   # Base 100 기준일
 
 # ================================================================
 # EPS 탭 — 분기별 EPS 하드코딩 데이터 (HTS 재무추이 기준)
@@ -849,7 +849,278 @@ EPS_QUARTERLY_DATA = {
 }
 
 
-def _build_daily_eps_from_quarterly(data_list):
+# ================================================================
+# EPS 추이2 — 기준일 2026/01, 실적(solid) + 가이던스(dotted), ~2028년
+# actual: 실제 발표 분기 EPS  /  guidance: 컨센서스·회사 가이던스 추정치
+# ================================================================
+
+EPS2_BASE_DATE = "2026-01-01"
+
+EPS_QUARTERLY_DATA_V2 = {
+    # ── 한국 ──────────────────────────────────────────────────────
+    "005930": {
+        "name": "삼성전자", "fdr": "005930",
+        "actual": [
+            (2025,3,1186),(2025,6,733),(2025,9,1783),(2025,12,2864),
+        ],
+        "guidance": [
+            (2026,6,10474),(2026,9,12509),(2026,12,13556),
+            (2027,3,15000),(2027,6,17000),(2027,9,18500),(2027,12,20000),
+            (2028,3,19000),(2028,6,20500),
+        ],
+    },
+    "009150": {
+        "name": "삼성전기", "fdr": "009150",
+        "actual": [
+            (2025,3,1723),(2025,6,1672),(2025,9,2833),(2025,12,2871),
+        ],
+        "guidance": [
+            (2026,6,3816),(2026,9,4794),(2026,12,4512),
+            (2027,3,4800),(2027,6,5200),(2027,9,5600),(2027,12,6000),
+            (2028,3,5800),(2028,6,6200),
+        ],
+    },
+    "353200": {
+        "name": "대덕전자", "fdr": "353200",
+        "actual": [
+            (2025,3,-111),(2025,6,86),(2025,9,452),(2025,12,497),
+        ],
+        "guidance": [
+            (2026,6,875),(2026,9,972),(2026,12,925),
+            (2027,3,1000),(2027,6,1150),(2027,9,1250),(2027,12,1350),
+            (2028,3,1300),(2028,6,1400),
+        ],
+    },
+    "000660": {
+        "name": "SK하이닉스", "fdr": "000660",
+        "actual": [
+            (2025,3,11136),(2025,6,9612),(2025,9,17301),(2025,12,20906),
+        ],
+        "guidance": [
+            (2026,6,68109),(2026,9,82163),(2026,12,88184),(2027,3,90446),
+            (2027,6,93000),(2027,9,96000),(2027,12,99000),
+            (2028,3,100000),(2028,6,103000),
+        ],
+    },
+    "267260": {
+        "name": "HD현대일렉트릭", "fdr": "267260",
+        "actual": [
+            (2025,3,4274),(2025,6,3951),(2025,9,5301),(2025,12,6797),
+        ],
+        "guidance": [
+            (2026,6,6210),(2026,9,7122),(2026,12,8481),(2027,3,6627),
+            (2027,6,7500),(2027,9,8500),(2027,12,9500),
+            (2028,3,9000),(2028,6,10000),
+        ],
+    },
+    "062040": {
+        "name": "산일전기", "fdr": "062040",
+        "actual": [
+            (2025,3,1026),(2025,6,1244),(2025,9,1210),
+        ],
+        "guidance": [
+            (2026,6,1551),(2026,9,1725),(2026,12,1852),(2027,3,1810),
+            (2027,6,1950),(2027,9,2050),(2027,12,2150),
+            (2028,3,2100),(2028,6,2200),
+        ],
+    },
+    "298040": {
+        "name": "효성중공업", "fdr": "298040",
+        "actual": [
+            (2025,3,10956),(2025,6,9922),(2025,9,16109),(2025,12,18769),
+        ],
+        "guidance": [
+            (2026,6,22505),(2026,9,22842),(2026,12,26080),(2027,3,18682),
+            (2027,6,22000),(2027,9,25000),(2027,12,28000),
+            (2028,3,26000),(2028,6,29000),
+        ],
+    },
+    "010120": {
+        "name": "LS ELECTRIC", "fdr": "010120",
+        "actual": [
+            (2025,3,466),(2025,6,447),(2025,9,443),(2025,12,555),
+        ],
+        "guidance": [
+            (2026,6,745),(2026,9,815),(2026,12,981),(2027,3,904),
+            (2027,6,980),(2027,9,1060),(2027,12,1120),
+            (2028,3,1080),(2028,6,1150),
+        ],
+    },
+    # ── 미국 ──────────────────────────────────────────────────────
+    "SNDK": {
+        "name": "샌디스크", "fdr": "SNDK",
+        "actual": [
+            (2025,3,-13.33),(2025,6,-0.16),(2025,9,0.75),(2025,12,5.15),
+            (2026,3,23.03),
+        ],
+        "guidance": [
+            (2026,6,32.32),(2026,9,40.63),(2026,12,44.93),(2027,3,34.21),
+            (2027,6,38.00),(2027,9,42.00),(2027,12,46.00),
+            (2028,3,45.00),(2028,6,49.00),
+        ],
+    },
+    "MU": {
+        "name": "마이크론", "fdr": "MU",
+        "actual": [
+            (2025,2,1.41),(2025,5,1.68),(2025,8,2.83),(2025,11,4.60),
+            (2026,2,12.07),
+        ],
+        "guidance": [
+            (2026,5,19.16),(2026,8,20.85),(2026,11,22.28),(2027,2,21.80),
+            (2027,5,22.50),(2027,8,23.50),(2027,11,24.00),
+            (2028,2,24.50),(2028,5,25.00),
+        ],
+    },
+    "STX": {
+        "name": "씨게이트", "fdr": "STX",
+        "actual": [
+            (2025,3,1.57),(2025,6,2.24),(2025,9,2.43),(2025,12,2.60),
+            (2026,3,3.27),
+        ],
+        "guidance": [
+            (2026,6,2.97),(2026,9,3.09),(2026,12,3.15),(2027,3,3.12),
+            (2027,6,3.25),(2027,9,3.40),(2027,12,3.55),
+            (2028,3,3.60),(2028,6,3.75),
+        ],
+    },
+    "GOOGL": {
+        "name": "구글", "fdr": "GOOGL",
+        "actual": [
+            (2025,3,2.81),(2025,6,2.31),(2025,9,2.87),(2025,12,2.82),
+            (2026,3,5.11),
+        ],
+        "guidance": [
+            (2026,6,2.81),(2026,9,2.99),(2026,12,3.20),(2027,3,3.53),
+            (2027,6,3.80),(2027,9,4.00),(2027,12,4.20),
+            (2028,3,4.10),(2028,6,4.40),
+        ],
+    },
+    "NVDA": {
+        "name": "엔비디아", "fdr": "NVDA",
+        "actual": [
+            (2025,1,0.89),(2025,4,0.76),(2025,7,1.08),(2025,10,1.30),
+            (2026,1,1.76),
+        ],
+        "guidance": [
+            (2026,4,1.74),(2026,7,1.93),(2026,10,2.11),(2027,1,2.29),
+            (2027,4,2.60),(2027,7,2.90),(2027,10,3.20),
+            (2028,1,3.50),(2028,4,3.80),
+        ],
+    },
+    "MSFT": {
+        "name": "마이크로소프트", "fdr": "MSFT",
+        "actual": [
+            (2025,3,3.46),(2025,6,3.65),(2025,9,3.72),(2025,12,5.16),
+            (2026,3,4.27),
+        ],
+        "guidance": [
+            (2026,6,4.16),(2026,9,4.65),(2026,12,4.88),(2027,3,4.92),
+            (2027,6,5.20),(2027,9,5.50),(2027,12,5.80),
+            (2028,3,6.10),(2028,6,6.40),
+        ],
+    },
+    "AVGO": {
+        "name": "브로드컴", "fdr": "AVGO",
+        "actual": [
+            (2025,1,1.14),(2025,4,1.03),(2025,7,0.85),(2025,10,1.74),
+            (2026,1,1.50),
+        ],
+        "guidance": [
+            (2026,4,2.36),(2026,7,3.02),(2026,10,3.70),(2027,1,3.97),
+            (2027,4,4.30),(2027,7,4.70),(2027,10,5.10),
+            (2028,1,5.50),(2028,4,5.90),
+        ],
+    },
+    "AMD": {
+        "name": "AMD", "fdr": "AMD",
+        "actual": [
+            (2025,3,0.44),(2025,6,0.54),(2025,9,0.75),(2025,12,0.92),
+            (2026,3,0.84),
+        ],
+        "guidance": [
+            (2026,6,1.59),(2026,9,1.88),(2026,12,2.48),(2027,3,2.43),
+            (2027,6,2.70),(2027,9,3.00),(2027,12,3.30),
+            (2028,3,3.20),(2028,6,3.50),
+        ],
+    },
+}
+
+
+def _build_eps2_combined(actual_data, guidance_data):
+    """
+    actual + guidance 데이터를 합쳐 하나의 연속 일별 시계열을 만든 뒤
+    EPS2_BASE_DATE 기준 Base 100으로 정규화.
+
+    반환:
+      act_dates, act_vals   — 실적 구간 (solid, 마지막 actual 날짜까지)
+      guid_dates, guid_vals — 가이던스 구간 (dotted, 마지막 actual 이후)
+    둘 다 같은 base_val로 정규화되어 차트에서 자연스럽게 이어짐.
+    """
+    import calendar
+
+    base_ts  = pd.Timestamp(EPS2_BASE_DATE)
+    today_ts = pd.Timestamp(TODAY)
+
+    def to_ts_pairs(data):
+        out = []
+        for year, month, eps in sorted(data):
+            ld = calendar.monthrange(year, month)[1]
+            out.append((pd.Timestamp(dt.date(year, month, ld)), float(eps)))
+        return out
+
+    act_pairs  = to_ts_pairs(actual_data)
+    guid_pairs = to_ts_pairs(guidance_data)
+    all_pairs  = sorted(act_pairs + guid_pairs, key=lambda x: x[0])
+
+    if not all_pairs:
+        return [], [], [], []
+
+    all_s = pd.Series(
+        [p[1] for p in all_pairs],
+        index=pd.DatetimeIndex([p[0] for p in all_pairs])
+    ).sort_index()
+
+    # 전체 범위: BASE_DATE ~ max(오늘, 마지막 데이터)
+    end_ts   = max(today_ts, all_s.index.max())
+    start_ts = min(all_s.index.min(), base_ts)
+    full_daily = (all_s.reindex(pd.date_range(start_ts, end_ts, freq="D"))
+                       .interpolate(method="linear").bfill())
+
+    # Base 100 기준값 (2026-01-01 시점)
+    if base_ts in full_daily.index:
+        base_val = float(full_daily[base_ts])
+    else:
+        after = full_daily[full_daily.index >= base_ts]
+        base_val = float(after.iloc[0]) if not after.empty else None
+    if not base_val or pd.isna(base_val) or base_val == 0:
+        return [], [], [], []
+
+    normed = (full_daily / base_val * 100)
+    normed = normed[normed.index >= base_ts]
+
+    # Actual 구간: BASE_DATE ~ min(마지막 actual 날짜, 오늘)
+    # 단, 마지막 actual이 BASE_DATE 이전이면 actual 구간은 없고 전체가 guidance
+    if act_pairs:
+        last_act_ts  = max(p[0] for p in act_pairs)
+        if last_act_ts >= base_ts:
+            # actual 데이터가 2026 이후까지 있음 → 해당 날짜까지 solid
+            actual_end = min(last_act_ts, today_ts)
+            act_part   = normed[normed.index <= actual_end]
+            guid_part  = normed[normed.index >= last_act_ts]  # 접점 포함
+        else:
+            # 모든 actual이 2026 이전 → 2026부터는 전부 guidance(dotted)
+            act_part  = pd.Series(dtype=float)
+            guid_part = normed
+    else:
+        act_part  = pd.Series(dtype=float)
+        guid_part = normed
+
+    def fmt(s):
+        if s.empty: return [], []
+        return ([d.date().strftime("%Y-%m-%d") for d in s.index],
+                [round(float(v), 2) for v in s])
+
+    return *fmt(act_part), *fmt(guid_part)
     """
     분기별 EPS [(year, month, eps), ...] → 일별 선형보간 시계열.
     - 분기말(해당 월 마지막 날) 기준으로 날짜 생성
@@ -939,6 +1210,43 @@ def fetch_eps_basket():
             result[ticker] = {"name": name, "price": price_s, "ttm_eps": eps_s}
 
     print(f"  eps_basket: {len(result)}/{len(EPS_QUARTERLY_DATA)} tickers")
+    return result
+
+
+def fetch_eps2_basket():
+    """
+    EPS 추이2 탭용 (기준일 2026-01-01, 가이던스 포함 ~2028).
+    반환: {ticker: {name, price, act_dates, act_vals, guid_dates, guid_vals}}
+    """
+    result = {}
+    for ticker, meta in EPS_QUARTERLY_DATA_V2.items():
+        name    = meta["name"]
+        fdr_sym = meta["fdr"]
+        print(f"  eps2_basket: {name} ({ticker})")
+
+        # 가격 (2026-01-01 이후)
+        price_s = safe(
+            f"eps2_price_{ticker}",
+            lambda fs=fdr_sym: _fetch_price_since(fs, start=EPS2_BASE_DATE),
+            default=pd.Series(dtype=float),
+        )
+        # EPS actual + guidance
+        act_d, act_v, guid_d, guid_v = safe(
+            f"eps2_build_{ticker}",
+            lambda a=meta["actual"], g=meta["guidance"]: _build_eps2_combined(a, g),
+            default=([], [], [], []),
+        )
+
+        result[ticker] = {
+            "name":       name,
+            "price":      price_s,
+            "act_dates":  act_d,
+            "act_vals":   act_v,
+            "guid_dates": guid_d,
+            "guid_vals":  guid_v,
+        }
+
+    print(f"  eps2_basket: {len(result)}/{len(EPS_QUARTERLY_DATA_V2)} tickers")
     return result
 
 
@@ -1120,7 +1428,8 @@ def update_data():
     macro_us = safe("macro_us", fetch_macro_us, default={})
     macro_kr = safe("macro_kr", fetch_macro_kr, default={})
     sk_nav = safe("sk_nav", fetch_sk_nav_info, default=None)
-    eps_basket = safe("eps_basket", fetch_eps_basket, default={})
+    eps_basket  = safe("eps_basket",  fetch_eps_basket,  default={})
+    eps2_basket = safe("eps2_basket", fetch_eps2_basket, default={})
 
     extras = {
         "us_margin_debt":us_margin_debt,"kr_power_basket":kr_power_basket,
@@ -1128,7 +1437,7 @@ def update_data():
         "us_indices_basket":us_indices_basket,"storage_basket":storage_basket,
         "fed_debt":fed_debt,"krwusd":krwusd,"cnn_fg":cnn_fg,
         "macro_us":macro_us,"macro_kr":macro_kr,
-        "sk_nav":sk_nav,"eps_basket":eps_basket,
+        "sk_nav":sk_nav,"eps_basket":eps_basket,"eps2_basket":eps2_basket,
     }
     return combined, extras
 
@@ -1889,6 +2198,38 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
 
     js_data["eps_basket"] = eps_js
 
+    # ── EPS 추이2 탭 데이터 (기준일 2026-01-01, 가이던스 포함) ──────────
+    eps2_basket = extras.get("eps2_basket", {}) or {}
+    eps2_js = {}
+    base2_dt = dt.datetime.strptime(EPS2_BASE_DATE, "%Y-%m-%d").date()
+
+    for ticker, data in eps2_basket.items():
+        name    = data.get("name", ticker)
+        price_s = data.get("price", pd.Series(dtype=float))
+        act_d   = data.get("act_dates", [])
+        act_v   = data.get("act_vals",  [])
+        guid_d  = data.get("guid_dates",[])
+        guid_v  = data.get("guid_vals", [])
+
+        # Price Base 100 (2026-01-01 기준)
+        pd2_dates, pd2_vals = _norm_b100(price_s, base2_dt)
+
+        # 최신 EPS값 (가이던스 포함 마지막 값)
+        raw_latest = guid_v[-1] if guid_v else (act_v[-1] if act_v else None)
+
+        eps2_js[ticker] = {
+            "name":       name,
+            "price_dates": pd2_dates,
+            "price_vals":  pd2_vals,
+            "act_dates":  act_d,
+            "act_vals":   act_v,
+            "guid_dates": guid_d,
+            "guid_vals":  guid_v,
+            "eps_b100_latest": raw_latest,
+        }
+
+    js_data["eps2_basket"] = eps2_js
+
     last_date = df_plot["date"].iloc[-1].strftime("%Y년 %m월 %d일") if not df_plot.empty else "대기"
     kr_color = COLOR.get(signals["label_kr"], "#888")
     us_color = COLOR.get(signals["label_us"], "#888")
@@ -1985,6 +2326,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
   <div class="tab" data-tab="us">🇺🇸 미국장 ({signals['label_us']})</div>
   <div class="tab" data-tab="macro">📡 매크로</div>
   <div class="tab" data-tab="eps">📊 EPS 추이</div>
+  <div class="tab" data-tab="eps2">📈 EPS 추이2</div>
 </div>
 
 <div id="pane-kr" class="pane active">
@@ -2068,7 +2410,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
 </div>
 
 <div id="pane-eps" class="pane">
-  <div class="section-title">📊 EPS vs 주가 추이 — 분기별 EPS · Base 100 ('24/01 = 100)</div>
+  <div class="section-title">📊 EPS vs 주가 추이 — 분기별 EPS · Base 100 ('25/01 = 100)</div>
   <div style="font-size:12px;color:#888;margin-bottom:18px;">
     진한 선 = 주가 · 연한 선 = 분기 EPS (선형보간, 추정치 포함) · Base 100 기준: 2024년 1월 · EPS 음영: 이익 개선 전 구간
   </div>
@@ -2093,6 +2435,35 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     <div class="chart"><div id="eps_MSFT"  style="height:320px;"></div></div>
     <div class="chart"><div id="eps_AVGO"  style="height:320px;"></div></div>
     <div class="chart"><div id="eps_AMD"   style="height:320px;"></div></div>
+  </div>
+</div>
+
+<div id="pane-eps2" class="pane">
+  <div class="section-title">📈 EPS 추이2 — 실적(실선) + 가이던스(점선) · Base 100 ('26/01 = 100)</div>
+  <div style="font-size:12px;color:#888;margin-bottom:18px;">
+    진한 실선 = 주가 · 연한 실선 = 분기 EPS (실제 발표) · 연한 점선 = EPS 가이던스/컨센서스 (~2028년) · 적자구간 붉은 음영
+  </div>
+  <div class="section-title" style="font-size:13px;color:#555;margin-bottom:8px;">🇰🇷 한국</div>
+  <div class="chart-grid">
+    <div class="chart"><div id="eps2_005930" style="height:340px;"></div></div>
+    <div class="chart"><div id="eps2_009150" style="height:340px;"></div></div>
+    <div class="chart"><div id="eps2_353200" style="height:340px;"></div></div>
+    <div class="chart"><div id="eps2_000660" style="height:340px;"></div></div>
+    <div class="chart"><div id="eps2_267260" style="height:340px;"></div></div>
+    <div class="chart"><div id="eps2_062040" style="height:340px;"></div></div>
+    <div class="chart"><div id="eps2_298040" style="height:340px;"></div></div>
+    <div class="chart"><div id="eps2_010120" style="height:340px;"></div></div>
+  </div>
+  <div class="section-title" style="font-size:13px;color:#555;margin:18px 0 8px;">🇺🇸 미국</div>
+  <div class="chart-grid">
+    <div class="chart"><div id="eps2_SNDK"  style="height:340px;"></div></div>
+    <div class="chart"><div id="eps2_MU"    style="height:340px;"></div></div>
+    <div class="chart"><div id="eps2_STX"   style="height:340px;"></div></div>
+    <div class="chart"><div id="eps2_GOOGL" style="height:340px;"></div></div>
+    <div class="chart"><div id="eps2_NVDA"  style="height:340px;"></div></div>
+    <div class="chart"><div id="eps2_MSFT"  style="height:340px;"></div></div>
+    <div class="chart"><div id="eps2_AVGO"  style="height:340px;"></div></div>
+    <div class="chart"><div id="eps2_AMD"   style="height:340px;"></div></div>
   </div>
 </div>
 
@@ -3119,6 +3490,144 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
 }})(); // end macro charts
 
 // ════════════════════════════════════════════════════════
+// EPS 추이2 탭 — 실적(solid) + 가이던스(dotted) Base 100 '26/01
+// ════════════════════════════════════════════════════════
+(function() {{
+  var EPS2_ORDER = [
+    '005930','009150','353200','000660',
+    '267260','062040','298040','010120',
+    'SNDK','MU','STX','GOOGL',
+    'NVDA','MSFT','AVGO','AMD'
+  ];
+  var C = {{
+    '005930':{{p:'#0A2A6E',e:'#7B9FD4'}},'009150':{{p:'#B22222',e:'#E89090'}},
+    '353200':{{p:'#1A7A4A',e:'#7DC0A0'}},'000660':{{p:'#6A0DAD',e:'#BF92CB'}},
+    '267260':{{p:'#CC5500',e:'#EBA87A'}},'062040':{{p:'#1A6B8A',e:'#7ABFDA'}},
+    '298040':{{p:'#7B4F00',e:'#C4906B'}},'010120':{{p:'#2E4057',e:'#8AA0B5'}},
+    'SNDK':{{p:'#E06B00',e:'#F5C38A'}},'MU':{{p:'#007A7A',e:'#7DE4D0'}},
+    'STX':{{p:'#A00000',e:'#E08080'}},'GOOGL':{{p:'#1A56DB',e:'#9CB8FB'}},
+    'NVDA':{{p:'#5A8A00',e:'#B8DB7A'}},'MSFT':{{p:'#0078D4',e:'#7BD1F7'}},
+    'AVGO':{{p:'#990000',e:'#E87878'}},'AMD':{{p:'#C00020',e:'#F08090'}},
+  }};
+
+  var basket2 = D.eps2_basket || {{}};
+
+  EPS2_ORDER.forEach(function(ticker) {{
+    var id = 'eps2_' + ticker;
+    var el = document.getElementById(id);
+    if (!el) return;
+
+    var d = basket2[ticker];
+    if (!d) {{ showEmpty(id, ticker + ' — 데이터 수집 중'); return; }}
+
+    var col = C[ticker] || {{p:'#333', e:'#999'}};
+    var traces = [];
+
+    // 주가 (solid, 진한색)
+    if (hasValues(d.price_vals)) {{
+      traces.push({{
+        x: d.price_dates, y: d.price_vals,
+        type:'scatter', mode:'lines', name: d.name + ' 주가',
+        connectgaps:true,
+        line:{{color:col.p, width:2.6, dash:'solid'}},
+        hovertemplate:'%{{x}}<br>주가 %{{y:.1f}}<extra></extra>'
+      }});
+    }}
+
+    // EPS 실적 (solid, 연한색)
+    if (hasValues(d.act_vals)) {{
+      traces.push({{
+        x: d.act_dates, y: d.act_vals,
+        type:'scatter', mode:'lines', name: d.name + ' EPS실적',
+        connectgaps:true,
+        line:{{color:col.e, width:2.2, dash:'solid'}},
+        hovertemplate:'%{{x}}<br>EPS실적 %{{y:.1f}}<extra></extra>'
+      }});
+    }}
+
+    // EPS 가이던스 (dot, 연한색)
+    if (hasValues(d.guid_vals)) {{
+      traces.push({{
+        x: d.guid_dates, y: d.guid_vals,
+        type:'scatter', mode:'lines', name: d.name + ' EPS가이던스',
+        connectgaps:true,
+        line:{{color:col.e, width:2.2, dash:'dot'}},
+        hovertemplate:'%{{x}}<br>가이던스 %{{y:.1f}}<extra></extra>'
+      }});
+    }}
+
+    if (traces.length === 0) {{ showEmpty(id, d.name + ' — 데이터 없음'); return; }}
+
+    // 제목
+    function lastV(arr) {{
+      if (!arr||!arr.length) return null;
+      for (var i=arr.length-1;i>=0;i--) if(arr[i]!==null&&arr[i]!==undefined) return arr[i];
+      return null;
+    }}
+    var pxLast   = lastV(d.price_vals);
+    var epsLast  = lastV(d.guid_vals) || lastV(d.act_vals);
+    var title = d.name + ' — 주가 vs EPS';
+    if (pxLast!==null)  title += '  주가 ' + pxLast.toFixed(1);
+    if (epsLast!==null) title += '  EPS ' + epsLast.toFixed(1);
+
+    // Base 100 기준선 + EPS<100 구간 음영
+    var shapes = [{{
+      type:'line', xref:'paper', x0:0, x1:1,
+      yref:'y', y0:100, y1:100,
+      line:{{color:'#ccc', width:1, dash:'dot'}}
+    }}];
+
+    // 가이던스 시작점 수직선
+    if (d.guid_dates && d.guid_dates.length > 0) {{
+      shapes.push({{
+        type:'line', xref:'x', x0:d.guid_dates[0], x1:d.guid_dates[0],
+        yref:'paper', y0:0, y1:1,
+        line:{{color:'#aaa', width:1, dash:'dash'}}
+      }});
+    }}
+
+    // EPS<100 적자구간 음영
+    var allEpsDates = (d.act_dates||[]).concat(d.guid_dates||[]);
+    var allEpsVals  = (d.act_vals||[]).concat(d.guid_vals||[]);
+    var inLoss=false, lossStart=null;
+    for (var i=0;i<allEpsVals.length;i++) {{
+      var v=allEpsVals[i];
+      if (v!==null&&v<100&&!inLoss) {{ inLoss=true; lossStart=allEpsDates[i]; }}
+      else if ((v===null||v>=100)&&inLoss) {{
+        inLoss=false;
+        shapes.push({{type:'rect',xref:'x',yref:'paper',
+          x0:lossStart,x1:allEpsDates[i-1]||allEpsDates[i],y0:0,y1:1,
+          fillcolor:'rgba(220,38,38,0.07)',line:{{width:0}}}});
+      }}
+    }}
+    if (inLoss&&lossStart&&allEpsDates.length)
+      shapes.push({{type:'rect',xref:'x',yref:'paper',
+        x0:lossStart,x1:allEpsDates[allEpsDates.length-1],y0:0,y1:1,
+        fillcolor:'rgba(220,38,38,0.07)',line:{{width:0}}}});
+
+    try {{
+      Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
+        title:{{text:title, font:{{size:12, color:col.p}}}},
+        yaxis:{{title:"Base 100  ('26/01=100)", gridcolor:'#F3F4F6', zeroline:false}},
+        xaxis:{{gridcolor:'#F3F4F6'}},
+        shapes:shapes,
+        annotations:[{{
+          xref:'paper', yref:'paper', x:0.01, y:0.97,
+          xanchor:'left', yanchor:'top', showarrow:false,
+          text:'실선=실적  점선=가이던스',
+          font:{{size:10, color:'#888'}}
+        }}],
+        legend:{{orientation:'h', y:-0.28, font:{{size:10}}}},
+        margin:{{t:60, r:25, b:62, l:60}}
+      }}), {{displayModeBar:false, responsive:true}});
+    }} catch(e) {{
+      console.error('eps2 plot', ticker, e);
+      showEmpty(id, d.name + ' — 렌더링 실패');
+    }}
+  }});
+}})();
+
+// ════════════════════════════════════════════════════════
 // EPS 탭 — 종목별 분기 EPS vs 주가 (Base 100, 종목별 고유 색상)
 // ════════════════════════════════════════════════════════
 (function() {{
@@ -3226,7 +3735,7 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
     try {{
       Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
         title:{{text:titleTxt, font:{{size:12, color: col.p}}}},
-        yaxis:{{title:"Base 100  ('24/01=100)", gridcolor:'#F3F4F6', zeroline:false}},
+        yaxis:{{title:"Base 100  ('25/01=100)", gridcolor:'#F3F4F6', zeroline:false}},
         xaxis:{{gridcolor:'#F3F4F6'}},
         shapes: shapes,
         legend:{{orientation:'h', y:-0.26, font:{{size:11}}}},
