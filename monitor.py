@@ -705,6 +705,147 @@ def fetch_storage_basket():
 
 
 # ================================================================
+# EPS 탭 — 종목별 TTM EPS vs 주가 추이 (Base 100, '24/01 기준)
+# ================================================================
+
+EPS_STOCKS = {
+    "005930": {"name": "삼성전자",       "yahoo": "005930.KS", "fdr": "005930"},
+    "009150": {"name": "삼성전기",       "yahoo": "009150.KS", "fdr": "009150"},
+    "014680": {"name": "대덕전자",       "yahoo": "014680.KS", "fdr": "014680"},
+    "000660": {"name": "SK하이닉스",     "yahoo": "000660.KS", "fdr": "000660"},
+    "SNDK":   {"name": "샌디스크",       "yahoo": "SNDK",      "fdr": "SNDK"},
+    "MU":     {"name": "마이크론",       "yahoo": "MU",        "fdr": "MU"},
+    "STX":    {"name": "씨게이트",       "yahoo": "STX",       "fdr": "STX"},
+    "GOOGL":  {"name": "구글",           "yahoo": "GOOGL",     "fdr": "GOOGL"},
+    "NVDA":   {"name": "엔비디아",       "yahoo": "NVDA",      "fdr": "NVDA"},
+    "MSFT":   {"name": "마이크로소프트", "yahoo": "MSFT",      "fdr": "MSFT"},
+    "AVGO":   {"name": "브로드컴",       "yahoo": "AVGO",      "fdr": "AVGO"},
+    "AMD":    {"name": "AMD",            "yahoo": "AMD",       "fdr": "AMD"},
+}
+
+EPS_BASE_DATE = "2024-01-01"   # Base 100 기준일
+
+
+def _fetch_ttm_eps_yfinance(yahoo_symbol):
+    """
+    yfinance 분기별 실적(quarterly_earnings 또는 income_stmt)으로
+    TTM EPS 시계열을 반환. 인덱스: date 객체, 값: TTM EPS (현지통화).
+    """
+    try:
+        import yfinance as yf
+        t = yf.Ticker(yahoo_symbol)
+
+        # 1) quarterly_earnings (구버전 yfinance)
+        qe = None
+        try:
+            qe = t.quarterly_earnings
+        except Exception:
+            pass
+
+        eps_series = None
+
+        if qe is not None and not qe.empty:
+            for col in ["Earnings", "EPS Actual", "EPS", "Reported EPS"]:
+                if col in qe.columns:
+                    eps_series = qe[col].dropna().sort_index()
+                    break
+
+        # 2) quarterly_income_stmt (신버전 yfinance)
+        if eps_series is None or eps_series.empty:
+            try:
+                qi = t.quarterly_income_stmt
+                if qi is not None and not qi.empty:
+                    for row_name in ["Diluted EPS", "Basic EPS", "Net Income"]:
+                        if row_name in qi.index:
+                            raw = qi.loc[row_name].dropna().sort_index()
+                            # Net Income → EPS 근사 (shares outstanding으로 나누기)
+                            if row_name == "Net Income":
+                                info = t.info or {}
+                                shares = info.get("sharesOutstanding") or info.get("impliedSharesOutstanding")
+                                if shares and shares > 0:
+                                    raw = raw / shares
+                                else:
+                                    continue
+                            eps_series = raw.sort_index()
+                            break
+            except Exception:
+                pass
+
+        if eps_series is None or len(eps_series) < 4:
+            return pd.Series(dtype=float)
+
+        # TTM = rolling sum of 4 quarters (정렬: 오름차순)
+        eps_series = eps_series.sort_index()
+        ttm = eps_series.rolling(4, min_periods=4).sum().dropna()
+        if ttm.empty:
+            return pd.Series(dtype=float)
+
+        # 일별로 reindex (분기 → 일별 forward-fill)
+        ttm.index = pd.to_datetime(ttm.index)
+        daily_idx = pd.date_range(ttm.index.min(), dt.datetime.today(), freq="D")
+        ttm_daily = ttm.reindex(daily_idx).ffill()
+
+        # EPS_BASE_DATE 이후로 자르기
+        base_dt = pd.Timestamp(EPS_BASE_DATE)
+        ttm_daily = ttm_daily[ttm_daily.index >= base_dt]
+        if ttm_daily.empty:
+            return pd.Series(dtype=float)
+
+        ttm_daily.index = ttm_daily.index.date
+        print(f"    ttm_eps {yahoo_symbol}: {len(ttm_daily)} rows, latest {float(ttm_daily.iloc[-1]):.3f}")
+        return ttm_daily.rename(yahoo_symbol)
+
+    except Exception as e:
+        print(f"  [warn] ttm_eps {yahoo_symbol}: {e}")
+        return pd.Series(dtype=float)
+
+
+def _fetch_price_since(fdr_symbol, start=EPS_BASE_DATE, days=None):
+    """Base Date 이후 주가 시계열 반환."""
+    try:
+        start_date = start
+        end_date = TODAY.strftime("%Y-%m-%d")
+        df = fdr.DataReader(fdr_symbol, start_date, end_date)
+        if df is None or df.empty:
+            return pd.Series(dtype=float)
+        s = df["Close"]
+        s.index = pd.to_datetime(s.index).date
+        return s.dropna()
+    except Exception as e:
+        print(f"  [warn] price {fdr_symbol}: {e}")
+        return pd.Series(dtype=float)
+
+
+def fetch_eps_basket():
+    """
+    EPS 탭용 데이터 수집.
+    반환: {ticker: {"name": str, "price": Series, "ttm_eps": Series}}
+    price / ttm_eps 모두 date-indexed, EPS_BASE_DATE 이후.
+    """
+    result = {}
+    for ticker, meta in EPS_STOCKS.items():
+        name = meta["name"]
+        print(f"  eps_basket: {name} ({ticker})")
+
+        price = safe(
+            f"eps_price_{ticker}",
+            lambda fs=meta["fdr"]: _fetch_price_since(fs),
+            default=pd.Series(dtype=float),
+        )
+        ttm_eps = safe(
+            f"eps_ttm_{ticker}",
+            lambda ys=meta["yahoo"]: _fetch_ttm_eps_yfinance(ys),
+            default=pd.Series(dtype=float),
+        )
+
+        if not price.empty or not ttm_eps.empty:
+            result[ticker] = {"name": name, "price": price, "ttm_eps": ttm_eps}
+
+    print(f"  eps_basket: {len(result)}/{len(EPS_STOCKS)} tickers")
+    return result
+
+
+# ================================================================
 # 한국 외국인 주식 보유금액 & 비중 - index.go.kr (월별)
 # ================================================================
 
@@ -882,6 +1023,7 @@ def update_data():
     macro_us = safe("macro_us", fetch_macro_us, default={})
     macro_kr = safe("macro_kr", fetch_macro_kr, default={})
     sk_nav = safe("sk_nav", fetch_sk_nav_info, default=None)
+    eps_basket = safe("eps_basket", fetch_eps_basket, default={})
 
     extras = {
         "us_margin_debt":us_margin_debt,"kr_power_basket":kr_power_basket,
@@ -889,7 +1031,7 @@ def update_data():
         "us_indices_basket":us_indices_basket,"storage_basket":storage_basket,
         "fed_debt":fed_debt,"krwusd":krwusd,"cnn_fg":cnn_fg,
         "macro_us":macro_us,"macro_kr":macro_kr,
-        "sk_nav":sk_nav,
+        "sk_nav":sk_nav,"eps_basket":eps_basket,
     }
     return combined, extras
 
@@ -1587,6 +1729,44 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     js_data["m_kr_base"] = _mks("kr_base_rate")
     js_data["m_kr_10y"]  = _mks("kr_10y")
 
+    # ── EPS 탭 데이터 처리 ────────────────────────────────────────────
+    eps_basket = extras.get("eps_basket", {}) or {}
+    eps_js = {}   # { ticker: {name, price_dates, price_vals, eps_dates, eps_vals} }
+    base_dt = dt.datetime.strptime(EPS_BASE_DATE, "%Y-%m-%d").date()
+
+    for ticker, data in eps_basket.items():
+        name = data.get("name", ticker)
+        price_s = data.get("price", pd.Series(dtype=float))
+        eps_s   = data.get("ttm_eps", pd.Series(dtype=float))
+
+        def _norm_b100(s, base_date):
+            """Base 100 normalisation from first value on/after base_date."""
+            if s is None or s.empty:
+                return [], []
+            s = pd.to_numeric(s, errors="coerce").dropna().sort_index()
+            s = s[s.index >= base_date]
+            if s.empty:
+                return [], []
+            base_val = s.iloc[0]
+            if base_val == 0 or pd.isna(base_val):
+                return [], []
+            normed = (s / base_val) * 100
+            return [d.strftime("%Y-%m-%d") for d in normed.index], \
+                   [round(float(v), 2) for v in normed]
+
+        pd_dates, pd_vals = _norm_b100(price_s, base_dt)
+        ed_dates, ed_vals = _norm_b100(eps_s,   base_dt)
+
+        eps_js[ticker] = {
+            "name":        name,
+            "price_dates": pd_dates,
+            "price_vals":  pd_vals,
+            "eps_dates":   ed_dates,
+            "eps_vals":    ed_vals,
+        }
+
+    js_data["eps_basket"] = eps_js
+
     last_date = df_plot["date"].iloc[-1].strftime("%Y년 %m월 %d일") if not df_plot.empty else "대기"
     kr_color = COLOR.get(signals["label_kr"], "#888")
     us_color = COLOR.get(signals["label_us"], "#888")
@@ -1682,6 +1862,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
   <div class="tab active" data-tab="kr">🇰🇷 한국장 ({signals['label_kr']})</div>
   <div class="tab" data-tab="us">🇺🇸 미국장 ({signals['label_us']})</div>
   <div class="tab" data-tab="macro">📡 매크로</div>
+  <div class="tab" data-tab="eps">📊 EPS 추이</div>
 </div>
 
 <div id="pane-kr" class="pane active">
@@ -1762,6 +1943,27 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     <div class="chart"><div id="m_kr_10y"    style="height:260px;"></div></div>
   </div>
   <div class="chart"><div id="m_kr_krwusd" style="height:280px;"></div></div>
+</div>
+
+<div id="pane-eps" class="pane">
+  <div class="section-title">📊 EPS vs 주가 추이 — TTM EPS · Base 100 ('24/01 = 100)</div>
+  <div style="font-size:12px;color:#888;margin-bottom:18px;">
+    진한 파란선 = 주가 · 연한 파란선 = TTM EPS (최근 4분기 합산) · Base 100: 2024년 1월 기준 정규화
+  </div>
+  <div class="chart-grid">
+    <div class="chart"><div id="eps_005930" style="height:320px;"></div></div>
+    <div class="chart"><div id="eps_009150" style="height:320px;"></div></div>
+    <div class="chart"><div id="eps_014680" style="height:320px;"></div></div>
+    <div class="chart"><div id="eps_000660" style="height:320px;"></div></div>
+    <div class="chart"><div id="eps_SNDK"   style="height:320px;"></div></div>
+    <div class="chart"><div id="eps_MU"     style="height:320px;"></div></div>
+    <div class="chart"><div id="eps_STX"    style="height:320px;"></div></div>
+    <div class="chart"><div id="eps_GOOGL"  style="height:320px;"></div></div>
+    <div class="chart"><div id="eps_NVDA"   style="height:320px;"></div></div>
+    <div class="chart"><div id="eps_MSFT"   style="height:320px;"></div></div>
+    <div class="chart"><div id="eps_AVGO"   style="height:320px;"></div></div>
+    <div class="chart"><div id="eps_AMD"    style="height:320px;"></div></div>
+  </div>
 </div>
 
 <div class="footer">데이터: FinanceDataReader, FRED(미국 10Y), 네이버 금융/공공데이터/보조 스크래핑 · 투자 권유 아님</div>
@@ -2785,6 +2987,100 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
   }})();
 
 }})(); // end macro charts
+
+// ════════════════════════════════════════════════════════
+// EPS 탭 — 종목별 TTM EPS vs 주가 (Base 100)
+// ════════════════════════════════════════════════════════
+(function() {{
+  var EPS_ORDER = [
+    '005930','009150','014680','000660',
+    'SNDK','MU','STX','GOOGL',
+    'NVDA','MSFT','AVGO','AMD'
+  ];
+  var basket = D.eps_basket || {{}};
+
+  EPS_ORDER.forEach(function(ticker) {{
+    var id  = 'eps_' + ticker;
+    var el  = document.getElementById(id);
+    if (!el) return;
+
+    var d = basket[ticker];
+    if (!d) {{ showEmpty(id, ticker + ' — 데이터 수집 중'); return; }}
+
+    var hasPx  = hasValues(d.price_vals);
+    var hasEPS = hasValues(d.eps_vals);
+
+    if (!hasPx && !hasEPS) {{
+      showEmpty(id, d.name + ' — 데이터 없음');
+      return;
+    }}
+
+    var traces = [];
+
+    if (hasPx) {{
+      traces.push({{
+        x: d.price_dates,
+        y: d.price_vals,
+        type: 'scatter', mode: 'lines',
+        name: d.name + ' 주가',
+        connectgaps: true,
+        line: {{color: '#0A2A6E', width: 2.4}},
+        hovertemplate: '%{{x}}<br>주가 %{{y:.1f}}<extra></extra>'
+      }});
+    }}
+
+    if (hasEPS) {{
+      traces.push({{
+        x: d.eps_dates,
+        y: d.eps_vals,
+        type: 'scatter', mode: 'lines',
+        name: d.name + ' TTM EPS',
+        connectgaps: true,
+        line: {{color: '#7BAFD4', width: 2.0, dash: 'solid'}},
+        hovertemplate: '%{{x}}<br>EPS %{{y:.1f}}<extra></extra>'
+      }});
+    }}
+
+    // 마지막 값 레이블
+    function lastVal(vals) {{
+      if (!vals || !vals.length) return null;
+      for (var i = vals.length - 1; i >= 0; i--) {{
+        if (vals[i] !== null && vals[i] !== undefined) return vals[i];
+      }}
+      return null;
+    }}
+    var pxLast  = lastVal(d.price_vals);
+    var epsLast = lastVal(d.eps_vals);
+    var subtitle = '';
+    if (pxLast  !== null) subtitle += ' 주가 ' + pxLast.toFixed(1);
+    if (epsLast !== null) subtitle += '  EPS ' + epsLast.toFixed(1);
+
+    try {{
+      Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
+        title: {{
+          text: d.name + ' — 주가 vs TTM EPS' + (subtitle ? '  (' + subtitle + ')' : ''),
+          font: {{size: 13}}
+        }},
+        yaxis: {{
+          title: "Base 100  ('24/01=100)",
+          gridcolor: '#F3F4F6',
+          zeroline: false
+        }},
+        xaxis: {{gridcolor: '#F3F4F6'}},
+        shapes: [{{
+          type: 'line', xref: 'paper', x0: 0, x1: 1,
+          yref: 'y', y0: 100, y1: 100,
+          line: {{color: '#ccc', width: 1, dash: 'dot'}}
+        }}],
+        legend: {{orientation: 'h', y: -0.22, font: {{size: 11}}}},
+        margin: {{t: 55, r: 30, b: 50, l: 55}}
+      }}), {{displayModeBar: false, responsive: true}});
+    }} catch(e) {{
+      console.error('eps plot error', ticker, e);
+      showEmpty(id, d.name + ' — 렌더링 실패');
+    }}
+  }});
+}})();
 
 </script>
 </body>
