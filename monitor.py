@@ -1240,32 +1240,114 @@ def _fetch_price_since(fdr_symbol, start=EPS_BASE_DATE, days=None):
         return pd.Series(dtype=float)
 
 
+def _build_daily_eps_from_quarterly(data_list):
+    """
+    분기별 EPS [(year, month, eps), ...] → 일별 선형보간 시계열.
+    인덱스를 EPS2와 동일하게 문자열 YYYY-MM-DD로 반환.
+    """
+    import calendar as _cal
+    if not data_list:
+        return pd.Series(dtype=float)
+
+    pairs = []
+    for year, month, eps in sorted(data_list):
+        ld = _cal.monthrange(year, month)[1]
+        pairs.append((pd.Timestamp(dt.date(year, month, ld)), float(eps)))
+
+    s = pd.Series([p[1] for p in pairs],
+                  index=pd.DatetimeIndex([p[0] for p in pairs])).sort_index()
+
+    today_ts = pd.Timestamp(TODAY)
+    base_ts  = pd.Timestamp(EPS_BASE_DATE)
+    end_ts   = max(today_ts, s.index.max())
+    start_ts = min(s.index.min(), base_ts)
+
+    s_daily = (s.reindex(pd.date_range(start_ts, end_ts, freq="D"))
+                .interpolate(method="linear").bfill())
+    s_daily = s_daily[s_daily.index <= today_ts]
+    s_daily = s_daily[s_daily.index >= base_ts]
+
+    # 인덱스 → 문자열 (타입 문제 원천 차단)
+    s_daily.index = [d.strftime("%Y-%m-%d") for d in s_daily.index]
+    return s_daily
+
+
+def _normalize_series_to_b100(s, base_date_str):
+    """
+    문자열 인덱스 Series를 base_date_str 기준 Base 100으로 정규화.
+    (dates_list, vals_list) 튜플 반환.
+    """
+    if s is None or s.empty:
+        return [], []
+    s = pd.to_numeric(s, errors="coerce").dropna()
+    if s.empty:
+        return [], []
+    # 인덱스가 문자열이 아니면 변환
+    try:
+        new_idx = [i.strftime("%Y-%m-%d") if hasattr(i, "strftime") else str(i)[:10]
+                   for i in s.index]
+        s = pd.Series(s.values, index=new_idx)
+    except Exception:
+        pass
+    s = s.sort_index()
+    s = s[s.index >= base_date_str]
+    if s.empty:
+        return [], []
+    base_val = float(s.iloc[0])
+    if pd.isna(base_val) or base_val == 0:
+        return [], []
+    if base_val < 0:
+        normed = 100 + (s - base_val) / abs(base_val) * 100
+    else:
+        normed = s / base_val * 100
+    return list(normed.index), [round(float(v), 2) for v in normed]
+
+
 def fetch_eps_basket():
     """
-    EPS 탭용 데이터 수집.
-    EPS: EPS_QUARTERLY_DATA 하드코딩 → 선형보간 일별 시계열
-    Price: FinanceDataReader로 수집
-    반환: {ticker: {"name": str, "price": Series, "ttm_eps": Series}}
+    EPS 추이 탭용 데이터 수집.
+    EPS / 주가 모두 Python에서 직접 Base 100 정규화해서 반환.
+    (JS의 _norm_b100 의존도를 제거해 EPS선 미표시 버그 해결)
     """
+    base_str = EPS_BASE_DATE  # "2025-01-01"
     result = {}
     for ticker, meta in EPS_QUARTERLY_DATA.items():
         name    = meta["name"]
         fdr_sym = meta["fdr"]
         print(f"  eps_basket: {name} ({ticker})")
 
+        # EPS 일별 시계열 (문자열 인덱스)
         eps_s = safe(
             f"eps_build_{ticker}",
             lambda d=meta["data"]: _build_daily_eps_from_quarterly(d),
             default=pd.Series(dtype=float),
         )
+        # 주가 시계열
         price_s = safe(
             f"eps_price_{ticker}",
             lambda fs=fdr_sym: _fetch_price_since(fs),
             default=pd.Series(dtype=float),
         )
 
-        if not price_s.empty or not eps_s.empty:
-            result[ticker] = {"name": name, "price": price_s, "ttm_eps": eps_s}
+        # Python에서 직접 Base 100 정규화
+        eps_dates, eps_vals = _normalize_series_to_b100(eps_s, base_str)
+        px_dates,  px_vals  = _normalize_series_to_b100(price_s, base_str)
+
+        # 최신 EPS 원본값 (적자 표시용)
+        eps_raw_latest = None
+        if eps_vals:
+            eps_raw_latest = eps_vals[-1]
+        eps_neg_base = bool(eps_vals and eps_vals[0] < 0)  # base 시점 음수 여부
+
+        result[ticker] = {
+            "name":           name,
+            "price_dates":    px_dates,
+            "price_vals":     px_vals,
+            "eps_dates":      eps_dates,
+            "eps_vals":       eps_vals,
+            "eps_raw_latest": eps_raw_latest,
+            "eps_neg_base":   eps_neg_base,
+        }
 
     print(f"  eps_basket: {len(result)}/{len(EPS_QUARTERLY_DATA)} tickers")
     return result
@@ -2195,73 +2277,19 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
 
     # ── EPS 탭 데이터 처리 ────────────────────────────────────────────
     eps_basket = extras.get("eps_basket", {}) or {}
-    eps_js = {}   # { ticker: {name, price_dates, price_vals, eps_dates, eps_vals} }
-    base_dt = dt.datetime.strptime(EPS_BASE_DATE, "%Y-%m-%d").date()
+    eps_js = {}
 
+    # fetch_eps_basket에서 이미 Python에서 정규화된 데이터를 직접 사용
+    # (render_dashboard의 _norm_b100을 거치지 않음 → EPS선 미표시 버그 해결)
     for ticker, data in eps_basket.items():
-        name = data.get("name", ticker)
-        price_s = data.get("price", pd.Series(dtype=float))
-        eps_s   = data.get("ttm_eps", pd.Series(dtype=float))
-
-        def _norm_b100(s, base_date):
-            """
-            Base 100 정규화. date/datetime 인덱스 타입 불일치 방지를 위해
-            인덱스를 문자열(YYYY-MM-DD)로 통일한 뒤 비교.
-            음수 base 값: 절대 변화량 기준 정규화.
-            """
-            if s is None or s.empty:
-                return [], []
-            s = pd.to_numeric(s, errors="coerce").dropna()
-            if s.empty:
-                return [], []
-            # ── 인덱스 → 문자열 통일 (date/datetime/str 모두 처리) ──────────
-            try:
-                new_idx = []
-                for i in s.index:
-                    if hasattr(i, "strftime"):
-                        new_idx.append(i.strftime("%Y-%m-%d"))
-                    else:
-                        new_idx.append(str(i)[:10])
-                s = pd.Series(s.values, index=new_idx)
-            except Exception:
-                pass
-            s = s.sort_index()
-            base_str = base_date.strftime("%Y-%m-%d") if hasattr(base_date, "strftime") else str(base_date)[:10]
-            s = s[s.index >= base_str]
-            if s.empty:
-                return [], []
-            base_val = float(s.iloc[0])
-            if pd.isna(base_val):
-                return [], []
-            if base_val == 0:
-                normed = s - s.iloc[0] + 100
-            elif base_val < 0:
-                normed = 100 + (s - base_val) / abs(base_val) * 100
-            else:
-                normed = s / base_val * 100
-            return list(normed.index), [round(float(v), 2) for v in normed]
-
-        pd_dates, pd_vals = _norm_b100(price_s, base_dt)
-        ed_dates, ed_vals = _norm_b100(eps_s,   base_dt)
-
-        # 원본 최신 EPS 값 (차트 제목/적자 표시용)
-        eps_raw_latest = None
-        eps_is_negative_base = False
-        if eps_s is not None and not eps_s.empty:
-            eps_clean = pd.to_numeric(eps_s, errors="coerce").dropna().sort_index()
-            eps_after = eps_clean[eps_clean.index >= base_dt]
-            if not eps_after.empty:
-                eps_raw_latest = round(float(eps_after.iloc[-1]), 2)
-                eps_is_negative_base = float(eps_after.iloc[0]) < 0
-
         eps_js[ticker] = {
-            "name":             name,
-            "price_dates":      pd_dates,
-            "price_vals":       pd_vals,
-            "eps_dates":        ed_dates,
-            "eps_vals":         ed_vals,
-            "eps_raw_latest":   eps_raw_latest,
-            "eps_neg_base":     eps_is_negative_base,
+            "name":           data.get("name", ticker),
+            "price_dates":    data.get("price_dates", []),
+            "price_vals":     data.get("price_vals",  []),
+            "eps_dates":      data.get("eps_dates",   []),
+            "eps_vals":       data.get("eps_vals",    []),
+            "eps_raw_latest": data.get("eps_raw_latest"),
+            "eps_neg_base":   data.get("eps_neg_base", False),
         }
 
     js_data["eps_basket"] = eps_js
@@ -2269,7 +2297,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     # ── EPS 추이2 탭 데이터 (기준일 2026-01-01, 가이던스 포함) ──────────
     eps2_basket = extras.get("eps2_basket", {}) or {}
     eps2_js = {}
-    base2_dt = dt.datetime.strptime(EPS2_BASE_DATE, "%Y-%m-%d").date()
+    base2_str = EPS2_BASE_DATE
 
     for ticker, data in eps2_basket.items():
         name    = data.get("name", ticker)
@@ -2279,8 +2307,8 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
         guid_d  = data.get("guid_dates",[])
         guid_v  = data.get("guid_vals", [])
 
-        # Price Base 100 (2026-01-01 기준)
-        pd2_dates, pd2_vals = _norm_b100(price_s, base2_dt)
+        # Price Base 100 (2026-01-01 기준) — 가격만 _normalize_series_to_b100 사용
+        pd2_dates, pd2_vals = _normalize_series_to_b100(price_s, base2_str)
 
         # 최신 EPS값 (가이던스 포함 마지막 값)
         raw_latest = guid_v[-1] if guid_v else (act_v[-1] if act_v else None)
