@@ -627,6 +627,35 @@ def fetch_kr_ship_basket():
     return result
 
 
+# ── PCB / 반도체 패키징 바스켓 (코스피200 + 삼성전기·이수페타시스·하이닉스·삼성전자·심텍·코리아써키트·대덕전자·LG이노텍)
+KR_PCB_STOCKS = {
+    "KS200":    ("KS200",  "코스피200"),
+    "SEMCO":    ("009150", "삼성전기"),
+    "ISUPE":    ("007660", "이수페타시스"),
+    "HYNIX":    ("000660", "SK하이닉스"),
+    "SEC":      ("005930", "삼성전자"),
+    "SIMTEC":   ("222800", "심텍"),
+    "KCIRCUIT": ("007810", "코리아써키트"),
+    "DAEDUK":   ("008060", "대덕전자"),
+    "LGINNO":   ("011070", "LG이노텍"),
+}
+
+
+def fetch_kr_pcb_basket():
+    """코스피200 + 국내 PCB/반도체 패키징 대표주 6개월 누적 추세용 바스켓."""
+    result = {}
+    for ticker, (source_symbol, _) in KR_PCB_STOCKS.items():
+        s = safe(
+            f"kr_pcb_{ticker}",
+            lambda ts=source_symbol, nm=ticker: fetch_fdr(ts, nm, days=LOOKBACK_DAYS),
+            default=pd.Series(dtype=float),
+        )
+        if not s.empty:
+            result[ticker] = s.rename(ticker)
+    print(f"  kr pcb basket: {len(result)} tickers")
+    return result
+
+
 M7_PLUS_STOCKS = {
     "SP500": "S&P500",
     "IXIC": "나스닥",
@@ -1558,6 +1587,7 @@ def update_data():
     us_margin_debt = safe("us_margin_debt", fetch_us_margin_debt, default={})
     kr_power_basket = safe("kr_power_basket", fetch_kr_power_basket, default={})
     kr_ship_basket = safe("kr_ship_basket", fetch_kr_ship_basket, default={})
+    kr_pcb_basket = safe("kr_pcb_basket", fetch_kr_pcb_basket, default={})
     m7_basket = safe("m7_plus", fetch_m7_plus_basket, default={})
     us_indices_basket = safe("us_indices", fetch_us_indices_basket, default={})
     storage_basket = safe("storage", fetch_storage_basket, default={})
@@ -1573,7 +1603,7 @@ def update_data():
 
     extras = {
         "us_margin_debt":us_margin_debt,"kr_power_basket":kr_power_basket,
-        "kr_ship_basket":kr_ship_basket,"m7_basket":m7_basket,
+        "kr_ship_basket":kr_ship_basket,"kr_pcb_basket":kr_pcb_basket,"m7_basket":m7_basket,
         "us_indices_basket":us_indices_basket,"storage_basket":storage_basket,
         "fed_debt":fed_debt,"krwusd":krwusd,"cnn_fg":cnn_fg,
         "macro_us":macro_us,"macro_kr":macro_kr,
@@ -2168,6 +2198,33 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     js_data["kr_ship_dates"] = kr_ship_dates
     js_data["kr_ship_series"] = kr_ship_series
 
+    # 3-2b. PCB / 반도체 패키징 바스켓 Base 100 (최근 6개월)
+    kr_pcb_basket = extras.get("kr_pcb_basket", {}) or {}
+    kr_pcb_dates = []
+    kr_pcb_series = {}
+    if kr_pcb_basket:
+        anchor = None
+        if "KS200" in kr_pcb_basket and not kr_pcb_basket["KS200"].empty:
+            anchor = kr_pcb_basket["KS200"]
+        else:
+            for _, s in kr_pcb_basket.items():
+                if not s.empty:
+                    anchor = s
+                    break
+        if anchor is not None:
+            cutoff = TODAY - dt.timedelta(days=180)
+            anchor = anchor[anchor.index >= cutoff]
+            kr_pcb_dates = [d.strftime("%Y-%m-%d") for d in anchor.index]
+            for ticker, s in kr_pcb_basket.items():
+                s2 = s[s.index >= cutoff]
+                s2_reidx = s2.reindex(anchor.index).ffill().bfill()
+                first_val = s2_reidx.dropna().iloc[0] if not s2_reidx.dropna().empty else None
+                if first_val and first_val > 0:
+                    normed = (s2_reidx / first_val) * 100
+                    kr_pcb_series[ticker] = [None if pd.isna(v) else round(float(v), 2) for v in normed]
+    js_data["kr_pcb_dates"] = kr_pcb_dates
+    js_data["kr_pcb_series"] = kr_pcb_series
+
     # 3-3. 미국 주요 지수 Base 100 (최근 3개월)
     us_indices_basket = extras.get("us_indices_basket", {}) or {}
     us_idx_dates = []
@@ -2441,6 +2498,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
   <div class="chart"><div id="c_kr_credit" style="height:300px;"></div></div>
   <div class="chart"><div id="c_kr_power" style="height:680px;"></div></div>
   <div class="chart"><div id="c_kr_ship" style="height:680px;"></div></div>
+  <div class="chart"><div id="c_kr_pcb" style="height:680px;"></div></div>
   <div class="chart"><div id="c_kr_semi" style="height:280px;"></div></div>
   <div class="chart"><div id="c_kr_sector" style="height:320px;"></div></div>
 </div>
@@ -2874,6 +2932,100 @@ safePlot('c_kr_credit', [
       hovermode: 'x unified'
     }}), {{displayModeBar: false, responsive: true}});
   }} catch (e) {{ console.error('kr ship plot:', e); showEmpty(id); }}
+}})();
+
+// === 코스피200 + PCB / 반도체 패키징 대표주 누적 추세 (Base 100, 최근 6개월) ===
+(function() {{
+  const id = 'c_kr_pcb';
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (!D.kr_pcb_dates || D.kr_pcb_dates.length === 0 || !D.kr_pcb_series || Object.keys(D.kr_pcb_series).length === 0) {{
+    showEmpty(id);
+    return;
+  }}
+  try {{
+    const colorMap = {{
+      'KS200':    '#9CA3AF',
+      'SEMCO':    '#0EA5E9',
+      'ISUPE':    '#10B981',
+      'HYNIX':    '#534AB7',
+      'SEC':      '#185FA5',
+      'SIMTEC':   '#F59E0B',
+      'KCIRCUIT': '#EF4444',
+      'DAEDUK':   '#8B5CF6',
+      'LGINNO':   '#EC4899'
+    }};
+    const labelMap = {{
+      'KS200':    '코스피200',
+      'SEMCO':    '삼성전기',
+      'ISUPE':    '이수페타시스',
+      'HYNIX':    'SK하이닉스',
+      'SEC':      '삼성전자',
+      'SIMTEC':   '심텍',
+      'KCIRCUIT': '코리아써키트',
+      'DAEDUK':   '대덕전자',
+      'LGINNO':   'LG이노텍'
+    }};
+    const order = ['KS200','SEC','HYNIX','SEMCO','ISUPE','SIMTEC','KCIRCUIT','DAEDUK','LGINNO'];
+    const traces = [];
+    order.forEach(t => {{
+      const vals = D.kr_pcb_series[t];
+      if (!vals || !hasValues(vals)) return;
+      const isIdx = t === 'KS200';
+      traces.push({{
+        x: D.kr_pcb_dates,
+        y: vals,
+        type: 'scatter',
+        mode: 'lines',
+        name: labelMap[t] || t,
+        connectgaps: true,
+        _key: t,
+        line: {{
+          color: colorMap[t] || '#666',
+          width: isIdx ? 1.8 : 2.3,
+          dash: isIdx ? 'dot' : 'solid',
+          shape: 'spline',
+          smoothing: 1.0
+        }},
+        hoverlabel: {{font: {{size: 13}}}}
+      }});
+    }});
+    if (traces.length === 0) {{ showEmpty(id); return; }}
+
+    const ranking = traces
+      .map(t => {{
+        const lastVal = [...t.y].reverse().find(v => v !== null && v !== undefined);
+        return {{key: t._key, name: t.name, last: lastVal}};
+      }})
+      .filter(x => x.last !== undefined && x.last !== null)
+      .sort((a, b) => b.last - a.last);
+
+    const lineHeight = 0.049;
+    const boxTop = 0.985;
+    const boxLeft = 0.012;
+    const rankAnnotations = [];
+    ranking.forEach((x, i) => {{
+      const color = colorMap[x.key] || '#333';
+      rankAnnotations.push({{
+        xref: 'paper', yref: 'paper',
+        x: boxLeft, y: boxTop - (i * lineHeight),
+        xanchor: 'left', yanchor: 'top',
+        align: 'left', showarrow: false,
+        text: '<b>' + (i + 1) + '위</b> ' + x.name + '<b> ' + x.last.toFixed(1) + '</b>',
+        font: {{size: 14, color: color, family: 'system-ui'}}
+      }});
+    }});
+
+    Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
+      title: {{text: '코스피200 + PCB / 반도체 패키징 대표주 누적 추세 (Base 100, 최근 6개월)', font: {{size: 16}}}},
+      yaxis: {{title: {{text: 'Base 100', font: {{size: 13}}}}, gridcolor: '#F3F4F6'}},
+      xaxis: {{gridcolor: '#F3F4F6'}},
+      legend: {{orientation: 'h', y: -0.08, x: 0.5, xanchor: 'center', font: {{size: 12}}}},
+      margin: {{t: 60, r: 40, b: 90, l: 60}},
+      annotations: rankAnnotations,
+      hovermode: 'x unified'
+    }}), {{displayModeBar: false, responsive: true}});
+  }} catch (e) {{ console.error('kr pcb plot:', e); showEmpty(id); }}
 }})();
 
 // --- 업데이트된 차트: 반도체 누적 추세 (3개월 + 샌디스크) ---
