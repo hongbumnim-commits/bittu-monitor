@@ -181,6 +181,21 @@ def fetch_fdr(symbol, name=None, days=LOOKBACK_DAYS):
     return s.rename(name or symbol)
 
 
+def fetch_fdr_multi(symbols, name=None, days=LOOKBACK_DAYS):
+    """여러 심볼 포맷을 순서대로 시도해 첫 성공 결과를 반환 (해외 거래소 대응).
+    예: 키옥시아(도쿄) → '285A.T'(야후) / '285A.JP'(stooq) / '285A' 순으로 시도."""
+    for sym in symbols:
+        try:
+            s = fetch_fdr(sym, name=name, days=days)
+            if s is not None and not s.empty:
+                print(f"  [{name or sym}] '{sym}' 심볼로 수집 성공 ({len(s)}건)")
+                return s
+        except Exception as e:
+            print(f"  [warn] fetch_fdr_multi '{sym}' 실패: {e}")
+            continue
+    return pd.Series(dtype=float, name=name or (symbols[0] if symbols else ""))
+
+
 def fetch_ust10y_fred():
     start = (TODAY - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%d")
     df = fdr.DataReader("FRED:DGS10", start)
@@ -1491,7 +1506,7 @@ def fetch_foreign_holding_kr():
 
 MAIN_COLS = [
     "date",
-    "kospi", "kosdaq", "samsung", "hynix", "mu", "sksquare", "sndk",
+    "kospi", "kosdaq", "samsung", "hynix", "mu", "sksquare", "sndk", "kioxia",
     "credit_balance_eok",
     "samsung_ret_pct", "hynix_ret_pct",
     "sp500", "nasdaq", "vix", "nvda", "ust10y", "cor1m",
@@ -1540,6 +1555,9 @@ def update_data():
     sksquare = safe("sksquare", lambda: fetch_fdr("402340", "sksquare"), default=pd.Series(dtype=float, name="sksquare"))
     # 이제 진짜 SNDK 티커로 데이터를 수집합니다.
     sndk = safe("sndk", lambda: fetch_fdr("SNDK", "sndk"), default=pd.Series(dtype=float, name="sndk"))
+    # 키옥시아(도쿄 285A) — NAND 순수 플레이. FDR 도쿄 심볼 포맷이 버전마다 달라 다중 시도.
+    kioxia = safe("kioxia", lambda: fetch_fdr_multi(["285A.T", "285A.JP", "285A"], "kioxia"),
+                  default=pd.Series(dtype=float, name="kioxia"))
 
     sp500 = safe("sp500", lambda: fetch_fdr("US500", "sp500"), default=pd.Series(dtype=float, name="sp500"))
     nasdaq = safe("nasdaq", lambda: fetch_fdr("IXIC", "nasdaq"), default=pd.Series(dtype=float, name="nasdaq"))
@@ -1557,7 +1575,7 @@ def update_data():
     credit_map  = safe("credit",        fetch_credit_balance,   default={})
 
     series_dict = {
-        "kospi": kospi, "kosdaq": kosdaq, "samsung": samsung, "hynix": hynix, "mu": mu, "sksquare": sksquare, "sndk": sndk,
+        "kospi": kospi, "kosdaq": kosdaq, "samsung": samsung, "hynix": hynix, "mu": mu, "sksquare": sksquare, "sndk": sndk, "kioxia": kioxia,
         "sp500": sp500, "nasdaq": nasdaq, "vix": vix, "nvda": nvda, "ust10y": ust10y,
         "cor1m": cor1m,
         **sectors
@@ -2020,6 +2038,15 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     df_3m = df_plot[df_plot["date"] >= cutoff_3m].copy() if not df_plot.empty else pd.DataFrame()
     dates_3m = [d.strftime("%Y-%m-%d") for d in df_3m["date"]] if not df_3m.empty else []
 
+    # --- 반도체 차트 3종용: 6개월(182일) / 1년(365일) 윈도우 ---
+    cutoff_6m = TODAY - dt.timedelta(days=182)
+    df_6m = df_plot[df_plot["date"] >= cutoff_6m].copy() if not df_plot.empty else pd.DataFrame()
+    dates_6m = [d.strftime("%Y-%m-%d") for d in df_6m["date"]] if not df_6m.empty else []
+
+    cutoff_1y = TODAY - dt.timedelta(days=365)
+    df_1y = df_plot[df_plot["date"] >= cutoff_1y].copy() if not df_plot.empty else pd.DataFrame()
+    dates_1y = [d.strftime("%Y-%m-%d") for d in df_1y["date"]] if not df_1y.empty else []
+
     kospi    = series_connected("kospi",      min_val=1000, max_daily_jump_pct=20)
     kosdaq = series_connected("kosdaq", min_val=300, max_daily_jump_pct=20)
     sp500 = series_connected("sp500", min_val=1000, max_daily_jump_pct=20)
@@ -2049,13 +2076,35 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
         "kosdaq_range": y_range([kosdaq, ma_series("kosdaq", 200)]),
 
         # --- 3개월 Base 100 변수들 (요청 차트 전용) ---
+        # max_daily_jump_pct=80: 신고가 종목(키옥시아/샌디스크/마이크론 등)의 하루 급등이
+        # 기존 25% 캡에 깎여 수익률이 과소 표시되던 문제 수정. 80%면 현실적 일중 변동은
+        # 전부 보존하면서, 누락 0(미씽) 같은 데이터 글리치만 걸러냄.
         "dates_3m": dates_3m,
-        "kospi_base100_3m": base100_custom(df_3m, "kospi"),
-        "samsung_base100_3m": base100_custom(df_3m, "samsung"),
-        "hynix_base100_3m": base100_custom(df_3m, "hynix"),
-        "mu_base100_3m": base100_custom(df_3m, "mu"),
-        "sksquare_base100_3m": base100_custom(df_3m, "sksquare"),
-        "sndk_base100_3m": base100_custom(df_3m, "sndk"),  # 샌디스크
+        "kospi_base100_3m": base100_custom(df_3m, "kospi", max_daily_jump_pct=80),
+        "samsung_base100_3m": base100_custom(df_3m, "samsung", max_daily_jump_pct=80),
+        "hynix_base100_3m": base100_custom(df_3m, "hynix", max_daily_jump_pct=80),
+        "mu_base100_3m": base100_custom(df_3m, "mu", max_daily_jump_pct=80),
+        "sksquare_base100_3m": base100_custom(df_3m, "sksquare", max_daily_jump_pct=80),
+        "sndk_base100_3m": base100_custom(df_3m, "sndk", max_daily_jump_pct=80),  # 샌디스크
+        "kioxia_base100_3m": base100_custom(df_3m, "kioxia", max_daily_jump_pct=80),  # 키옥시아(도쿄 285A)
+        # 6개월 Base 100 (반도체 차트)
+        "dates_6m": dates_6m,
+        "kospi_base100_6m": base100_custom(df_6m, "kospi", max_daily_jump_pct=80),
+        "samsung_base100_6m": base100_custom(df_6m, "samsung", max_daily_jump_pct=80),
+        "hynix_base100_6m": base100_custom(df_6m, "hynix", max_daily_jump_pct=80),
+        "mu_base100_6m": base100_custom(df_6m, "mu", max_daily_jump_pct=80),
+        "sndk_base100_6m": base100_custom(df_6m, "sndk", max_daily_jump_pct=80),
+        "kioxia_base100_6m": base100_custom(df_6m, "kioxia", max_daily_jump_pct=80),
+        "sksquare_base100_6m": base100_custom(df_6m, "sksquare", max_daily_jump_pct=80),
+        # 1년 Base 100 (반도체 차트)
+        "dates_1y": dates_1y,
+        "kospi_base100_1y": base100_custom(df_1y, "kospi", max_daily_jump_pct=80),
+        "samsung_base100_1y": base100_custom(df_1y, "samsung", max_daily_jump_pct=80),
+        "hynix_base100_1y": base100_custom(df_1y, "hynix", max_daily_jump_pct=80),
+        "mu_base100_1y": base100_custom(df_1y, "mu", max_daily_jump_pct=80),
+        "sndk_base100_1y": base100_custom(df_1y, "sndk", max_daily_jump_pct=80),
+        "kioxia_base100_1y": base100_custom(df_1y, "kioxia", max_daily_jump_pct=80),
+        "sksquare_base100_1y": base100_custom(df_1y, "sksquare", max_daily_jump_pct=80),
         "sec_반도체_3m": base100_custom(df_3m, "sec_반도체"),
         "sec_방산조선_3m": base100_custom(df_3m, "sec_방산조선"),
         "sec_바이오_3m": base100_custom(df_3m, "sec_바이오"),
@@ -2497,10 +2546,10 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
   <div class="chart"><div id="c_kr_krwusd" style="height:280px;"></div></div>
   <div class="chart"><div id="c_kr_credit" style="height:300px;"></div></div>
   <div class="chart"><div id="c_kr_power" style="height:680px;"></div></div>
-  <div class="chart"><div id="c_kr_ship" style="height:680px;"></div></div>
   <div class="chart"><div id="c_kr_pcb" style="height:680px;"></div></div>
-  <div class="chart"><div id="c_kr_semi" style="height:280px;"></div></div>
-  <div class="chart"><div id="c_kr_sector" style="height:320px;"></div></div>
+  <div class="chart"><div id="c_kr_semi_1y" style="height:560px;"></div></div>
+  <div class="chart"><div id="c_kr_semi_6m" style="height:560px;"></div></div>
+  <div class="chart"><div id="c_kr_semi_3m" style="height:560px;"></div></div>
 </div>
 
 <div id="pane-us" class="pane">
@@ -2845,95 +2894,6 @@ safePlot('c_kr_credit', [
   }} catch (e) {{ console.error('kr power plot:', e); showEmpty(id); }}
 }})();
 
-// === 코스피 + 코스닥 + 핵심 조선주 누적 추세 (Base 100) ===
-(function() {{
-  const id = 'c_kr_ship';
-  const el = document.getElementById(id);
-  if (!el) return;
-  if (!D.kr_ship_dates || D.kr_ship_dates.length === 0 || !D.kr_ship_series || Object.keys(D.kr_ship_series).length === 0) {{
-    showEmpty(id);
-    return;
-  }}
-  try {{
-    const colorMap = {{
-      'KOSPI':      '#6B7280',
-      'KOSDAQ':     '#1E3A8A',
-      'HD_KSH':     '#DC2626',
-      'HANWHA_OC':  '#F59E0B',
-      'SAMSUNG_HI': '#10B981',
-      'HD_HHI':    '#7C3AED'
-    }};
-    const labelMap = {{
-      'KOSPI':      '코스피',
-      'KOSDAQ':     '코스닥',
-      'HD_KSH':     'HD한국조선해양',
-      'HANWHA_OC':  '한화오션',
-      'SAMSUNG_HI': '삼성중공업',
-      'HD_HHI':    'HD현대중공업'
-    }};
-    const order = ['KOSPI', 'KOSDAQ', 'HD_KSH', 'HANWHA_OC', 'SAMSUNG_HI', 'HD_HHI'];
-    const traces = [];
-    order.forEach(t => {{
-      const vals = D.kr_ship_series[t];
-      if (!vals || !hasValues(vals)) return;
-      const isKospi = t === 'KOSPI';
-      const isKosdaq = t === 'KOSDAQ';
-      traces.push({{
-        x: D.kr_ship_dates,
-        y: vals,
-        type: 'scatter',
-        mode: 'lines',
-        name: labelMap[t] || t,
-        connectgaps: true,
-        _key: t,
-        line: {{
-          color: colorMap[t] || '#666',
-          width: (isKospi || isKosdaq) ? 2.6 : 2.4,
-          dash: isKospi ? 'dot' : (isKosdaq ? 'dash' : 'solid'),
-          shape: 'spline',
-          smoothing: 1.0
-        }},
-        hoverlabel: {{font: {{size: 13}}}}
-      }});
-    }});
-    if (traces.length === 0) {{ showEmpty(id); return; }}
-
-    const ranking = traces
-      .map(t => {{
-        const lastVal = [...t.y].reverse().find(v => v !== null && v !== undefined);
-        return {{key: t._key, name: t.name, last: lastVal}};
-      }})
-      .filter(x => x.last !== undefined && x.last !== null)
-      .sort((a, b) => b.last - a.last);
-
-    const lineHeight = 0.05;
-    const boxTop = 0.985;
-    const boxLeft = 0.012;
-    const rankAnnotations = [];
-    ranking.forEach((x, i) => {{
-      const color = colorMap[x.key] || '#333';
-      rankAnnotations.push({{
-        xref: 'paper', yref: 'paper',
-        x: boxLeft, y: boxTop - (i * lineHeight),
-        xanchor: 'left', yanchor: 'top',
-        align: 'left', showarrow: false,
-        text: '<b>' + (i + 1) + '위</b> ' + x.name + '<b> ' + x.last.toFixed(1) + '</b>',
-        font: {{size: 15, color: color, family: 'system-ui'}}
-      }});
-    }});
-
-    Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
-      title: {{text: '코스피 + 코스닥 + 핵심 조선주 누적 추세 (Base 100)', font: {{size: 16}}}},
-      yaxis: {{title: {{text: 'Base 100', font: {{size: 13}}}}, gridcolor: '#F3F4F6'}},
-      xaxis: {{gridcolor: '#F3F4F6'}},
-      legend: {{orientation: 'h', y: -0.08, x: 0.5, xanchor: 'center', font: {{size: 12}}}},
-      margin: {{t: 60, r: 40, b: 90, l: 60}},
-      annotations: rankAnnotations,
-      hovermode: 'x unified'
-    }}), {{displayModeBar: false, responsive: true}});
-  }} catch (e) {{ console.error('kr ship plot:', e); showEmpty(id); }}
-}})();
-
 // === 코스피200 + PCB / 반도체 패키징 대표주 누적 추세 (Base 100, 최근 6개월) ===
 (function() {{
   const id = 'c_kr_pcb';
@@ -3028,25 +2988,38 @@ safePlot('c_kr_credit', [
   }} catch (e) {{ console.error('kr pcb plot:', e); showEmpty(id); }}
 }})();
 
-// --- 업데이트된 차트: 반도체 누적 추세 (3개월 + 샌디스크) ---
-safePlot('c_kr_semi', [
+// --- 반도체 누적 추세 3종 (1년 / 6개월 / 3개월) ---
+// 1년·6개월은 로그축: 키옥시아 등 수십 배 오른 종목이 선형축에선 나머지 선을 바닥에 깔아버림.
+// 로그축에서는 '같은 세로 간격 = 같은 수익률'이라 종목 간 상대 성과 비교가 정확해짐.
+safePlot('c_kr_semi_1y', [
+  {{x: D.dates_1y, y: D.kospi_base100_1y, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#888', width: 1.2, dash: 'dot'}}}},
+  {{x: D.dates_1y, y: D.samsung_base100_1y, type: 'scatter', mode: 'lines', name: '삼성전자', connectgaps: true, line: {{color: '#185FA5', width: 2.2}}}},
+  {{x: D.dates_1y, y: D.hynix_base100_1y, type: 'scatter', mode: 'lines', name: 'SK하이닉스', connectgaps: true, line: {{color: '#534AB7', width: 2.2}}}},
+  {{x: D.dates_1y, y: D.mu_base100_1y, type: 'scatter', mode: 'lines', name: '마이크론', connectgaps: true, line: {{color: '#10B981', width: 2.2}}}},
+  {{x: D.dates_1y, y: D.sndk_base100_1y, type: 'scatter', mode: 'lines', name: 'SNDK(샌디스크)', connectgaps: true, line: {{color: '#F59E0B', width: 2.2}}}},
+  {{x: D.dates_1y, y: D.kioxia_base100_1y, type: 'scatter', mode: 'lines', name: '키옥시아(285A)', connectgaps: true, line: {{color: '#C026D3', width: 2.2}}}},
+  {{x: D.dates_1y, y: D.sksquare_base100_1y, type: 'scatter', mode: 'lines', name: 'SK스퀘어', connectgaps: true, line: {{color: '#DC2626', width: 2.2}}}}
+], '반도체 누적 추세 (Base 100, 최근 1년 · 로그축)', {{yaxis: {{title: 'Base 100', type: 'log'}}}});
+
+safePlot('c_kr_semi_6m', [
+  {{x: D.dates_6m, y: D.kospi_base100_6m, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#888', width: 1.2, dash: 'dot'}}}},
+  {{x: D.dates_6m, y: D.samsung_base100_6m, type: 'scatter', mode: 'lines', name: '삼성전자', connectgaps: true, line: {{color: '#185FA5', width: 2.2}}}},
+  {{x: D.dates_6m, y: D.hynix_base100_6m, type: 'scatter', mode: 'lines', name: 'SK하이닉스', connectgaps: true, line: {{color: '#534AB7', width: 2.2}}}},
+  {{x: D.dates_6m, y: D.mu_base100_6m, type: 'scatter', mode: 'lines', name: '마이크론', connectgaps: true, line: {{color: '#10B981', width: 2.2}}}},
+  {{x: D.dates_6m, y: D.sndk_base100_6m, type: 'scatter', mode: 'lines', name: 'SNDK(샌디스크)', connectgaps: true, line: {{color: '#F59E0B', width: 2.2}}}},
+  {{x: D.dates_6m, y: D.kioxia_base100_6m, type: 'scatter', mode: 'lines', name: '키옥시아(285A)', connectgaps: true, line: {{color: '#C026D3', width: 2.2}}}},
+  {{x: D.dates_6m, y: D.sksquare_base100_6m, type: 'scatter', mode: 'lines', name: 'SK스퀘어', connectgaps: true, line: {{color: '#DC2626', width: 2.2}}}}
+], '반도체 누적 추세 (Base 100, 최근 6개월 · 로그축)', {{yaxis: {{title: 'Base 100', type: 'log'}}}});
+
+safePlot('c_kr_semi_3m', [
   {{x: D.dates_3m, y: D.kospi_base100_3m, type: 'scatter', mode: 'lines', name: '코스피', connectgaps: true, line: {{color: '#888', width: 1.2, dash: 'dot'}}}},
   {{x: D.dates_3m, y: D.samsung_base100_3m, type: 'scatter', mode: 'lines', name: '삼성전자', connectgaps: true, line: {{color: '#185FA5', width: 2.2}}}},
   {{x: D.dates_3m, y: D.hynix_base100_3m, type: 'scatter', mode: 'lines', name: 'SK하이닉스', connectgaps: true, line: {{color: '#534AB7', width: 2.2}}}},
   {{x: D.dates_3m, y: D.mu_base100_3m, type: 'scatter', mode: 'lines', name: '마이크론', connectgaps: true, line: {{color: '#10B981', width: 2.2}}}},
   {{x: D.dates_3m, y: D.sndk_base100_3m, type: 'scatter', mode: 'lines', name: 'SNDK(샌디스크)', connectgaps: true, line: {{color: '#F59E0B', width: 2.2}}}},
+  {{x: D.dates_3m, y: D.kioxia_base100_3m, type: 'scatter', mode: 'lines', name: '키옥시아(285A)', connectgaps: true, line: {{color: '#C026D3', width: 2.2}}}},
   {{x: D.dates_3m, y: D.sksquare_base100_3m, type: 'scatter', mode: 'lines', name: 'SK스퀘어', connectgaps: true, line: {{color: '#DC2626', width: 2.2}}}}
 ], '반도체 누적 추세 (Base 100, 최근 3개월)', {{yaxis: {{title: 'Base 100'}}}});
-
-// --- 업데이트된 차트: 업종 바구니 누적 추세 (3개월) ---
-safePlot('c_kr_sector', [
-  {{x: D.dates_3m, y: D.sec_반도체_3m, type: 'scatter', mode: 'lines', name: '반도체', connectgaps: false, line: {{color: '#185FA5', width: 2.2}}}},
-  {{x: D.dates_3m, y: D.sec_방산조선_3m, type: 'scatter', mode: 'lines', name: '방산조선', connectgaps: false, line: {{color: '#534AB7', width: 2.0}}}},
-  {{x: D.dates_3m, y: D.sec_바이오_3m, type: 'scatter', mode: 'lines', name: '바이오', connectgaps: false, line: {{color: '#2AA198', width: 1.8}}}},
-  {{x: D.dates_3m, y: D.sec_2차전지_3m, type: 'scatter', mode: 'lines', name: '2차전지', connectgaps: false, line: {{color: '#BA7517', width: 1.8}}}},
-  {{x: D.dates_3m, y: D.sec_금융_3m, type: 'scatter', mode: 'lines', name: '금융', connectgaps: false, line: {{color: '#888', width: 1.8}}}},
-  {{x: D.dates_3m, y: D.sec_전기_3m, type: 'scatter', mode: 'lines', name: '전기', connectgaps: false, line: {{color: '#DC2626', width: 2.0}}}}
-], '업종 바구니 누적 추세 (Base 100, 최근 3개월)', {{yaxis: {{title: 'Base 100'}}}});
 
 // === 스토리지 종목 누적 추세 (STX, SNDK + S&P500, 나스닥 Base 100) ===
 (function() {{
