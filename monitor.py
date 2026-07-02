@@ -34,6 +34,73 @@ SECTOR_BASKETS = {
     "전기":     ["298040", "010120", "267260", "062040"],
 }
 
+# ════════════════════════════════════════════════════════════════════
+# 엔비디아 / AI 인프라 크레딧 사이클 탭 — 수동 추적 데이터
+# ────────────────────────────────────────────────────────────────────
+# ⚠️ 아래 값들은 라이브 API로 자동 수집되지 않습니다 (렌탈요율·신용등급·분기
+#    실적·건설비는 시장 관측/공시 기반). 새 데이터가 나오면 여기서 직접 갱신.
+#    라이브로 자동 갱신되는 것은 이 탭의 '주가' 차트(NVDA·CRWV 등)뿐입니다.
+#    수치 출처: 첨부 논지(Antfeed) 명시 앵커값.
+# ════════════════════════════════════════════════════════════════════
+NVDA_WATCH = {
+    "updated": "1Q26 기준 · 수동",
+
+    # H100 시간당 렌탈요율 (USD/hr). 기사 명시 앵커 2점.
+    # 관측치가 늘면 (연월, 값) 튜플을 시간순으로 추가하세요.
+    "h100_rental": [
+        ("2023", 8.00),
+        ("2026-06", 2.35),
+    ],
+
+    # 데이터센터 GW당 건설비 (십억 USD). 기사 명시 앵커.
+    "buildcost_gw": [
+        ("2023–24", 42),
+        ("2026", 62),
+    ],
+
+    # 서버 내용연수 가정 연장 (감가상각 왜곡)
+    "useful_life": {"from_yr": "3–4년", "to_yr": "5–6년", "dep_impact_bn": 18},
+
+    # CoreWeave 1Q26 스냅샷
+    "coreweave": {
+        "quarter": "1Q26",
+        "revenue_bn": 2.078, "rev_yoy_pct": 112,
+        "net_loss_bn": 0.740, "interest_bn": 0.536,
+        "debt_bn": 24.859, "leverage_x": 8.9,
+        "backlog_bn": 99.4, "conv_24m_pct": 36, "conv_4y_pct": 75,
+        "nvda_equity_bn": 2.0,
+    },
+
+    # GPU 담보 신용등급 마이그레이션 (tag: "ig"=투자등급 / "junk"=정크)
+    "credit_events": [
+        ("2026-03", "GPU 담보대출 발행 — 투자등급 획득", "ig"),
+        ("2026-05", "신규 대출 — 정크등급, 크레딧 스프레드 2배 확대", "junk"),
+    ],
+
+    # 순환출자·순환매출 구조
+    "circular": [
+        ("엔비디아 → CoreWeave", "GPU 판매 + 같은 분기 20억달러 지분투자"),
+        ("MS → OpenAI", "지분투자 + OpenAI의 Azure 대규모 클라우드 약정"),
+        ("구글 → Anthropic", "지분투자 + TPU 공급·리스보증·Fluidstack 수요"),
+    ],
+
+    # 전이 경로 (도미노)
+    "domino": [
+        "AI 수요 둔화", "하이퍼스케일러 capex 삭감", "GPU 주문 감소",
+        "렌탈요율 하락", "GPU 담보가치 하락", "신용 경색", "AI 인프라 루프 축소",
+    ],
+
+    # 감시 체크리스트
+    "watchlist": [
+        "H100/H200 렌탈요율 — 하락 가속 여부 (경제수명 vs 6년 회계수명 미스매치)",
+        "CoreWeave·Neocloud 신규 채권 등급/스프레드 (IG→정크 전이)",
+        "하이퍼스케일러 capex 가이던스 — 감액 시그널",
+        "OpenAI·Anthropic 사설 밸류 라운드 — 정체/반전 시 비현금 이익 역풍",
+        "GW당 건설비 — 신규투자 수익률 압박",
+        "GPU 담보대출 만기 구조 — 담보가 대출잔액보다 빨리 하락하는지",
+    ],
+}
+
 
 
 # 공공데이터포털 서비스키 (data.go.kr) - GitHub Secret: DATA_GO_KR_API_KEY
@@ -746,6 +813,144 @@ def fetch_storage_basket():
             result[ticker] = s.rename(ticker)
     print(f"  storage basket: {len(result)} tickers")
     return result
+
+
+NVDA_ECOSYSTEM = {
+    "NVDA":  "엔비디아",
+    "CRWV":  "코어위브",
+    "MSFT":  "MS",
+    "GOOGL": "구글",
+    "AMZN":  "아마존",
+    "AVGO":  "브로드컴",
+}
+
+
+def fetch_nvda_ecosystem_basket():
+    """엔비디아 + CoreWeave(CRWV) + 순환출자 생태계(MSFT/GOOGL/AMZN/AVGO) 주가.
+    CRWV는 '25.3 상장이라 이력이 짧을 수 있음 — 수집 실패해도 다른 종목/탭 영향 없음."""
+    SYMBOL_MAP = {
+        "NVDA": "NVDA", "CRWV": "CRWV", "MSFT": "MSFT",
+        "GOOGL": "GOOGL", "AMZN": "AMZN", "AVGO": "AVGO",
+    }
+    result = {}
+    for ticker in NVDA_ECOSYSTEM:
+        source = SYMBOL_MAP.get(ticker, ticker)
+        s = safe(f"nvda_eco_{ticker}", lambda ts=source, nm=ticker: fetch_fdr(ts, nm, days=LOOKBACK_DAYS),
+                 default=pd.Series(dtype=float))
+        if not s.empty:
+            result[ticker] = s.rename(ticker)
+    print(f"  nvda ecosystem basket: {len(result)} tickers")
+    return result
+
+
+# 순환금융 '수혜(차입)측' 프록시 — GPU 담보/네오클라우드 상장사
+NEOCLOUD_STOCKS = {
+    "CRWV": "코어위브",
+    "NBIS": "네비우스",
+    "IREN": "아이렌",
+    "APLD": "어플라이드디지털",
+    "CORZ": "코어사이언티픽",
+}
+
+
+def fetch_neocloud_basket():
+    """GPU 담보 신용에 의존하는 네오클라우드 바스켓 (순환금융 '차입측').
+    이들이 펀더(NVDA/하이퍼스케일러) 대비 급격히 무너지면 = 순환 고리 균열."""
+    result = {}
+    for ticker in NEOCLOUD_STOCKS:
+        s = safe(f"neocloud_{ticker}", lambda ts=ticker: fetch_fdr(ts, ts, days=LOOKBACK_DAYS),
+                 default=pd.Series(dtype=float))
+        if not s.empty:
+            result[ticker] = s.rename(ticker)
+    print(f"  neocloud basket: {len(result)} tickers")
+    return result
+
+
+# GPU 스팟 렌탈요율 (Vast.ai 마켓 중앙값) — 선택적 VAST_API_KEY (GitHub Secret)
+VAST_API_KEY = os.environ.get("VAST_API_KEY", "")
+
+
+def fetch_gpu_rental_snapshot(gpu="H100"):
+    """Vast.ai 마켓플레이스에서 해당 GPU 렌더블 오퍼들의 per-GPU $/hr '오늘자 중앙값' 1점.
+    ⚠️ 외부(Vast.ai) 접속 → 인터넷이 열린 러너(GitHub Actions)에서만 동작.
+       (이 개발 샌드박스에선 도메인 차단으로 항상 실패 → 폴백됨. 실제 러너에서 1회 검증 필요)
+       실패 시 None 반환 → 차트는 누적 CSV/앵커값으로 폴백."""
+    import statistics
+    import urllib.parse
+    import json as _json
+    headers = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
+    if VAST_API_KEY:
+        headers["Authorization"] = f"Bearer {VAST_API_KEY}"
+    q = {"gpu_name": {"eq": gpu}, "rentable": {"eq": True}, "num_gpus": {"gte": 1}}
+    urls = [
+        "https://console.vast.ai/api/v0/bundles/?q=" + urllib.parse.quote(_json.dumps(q)),
+        "https://console.vast.ai/api/v0/bundles/",
+    ]
+    for url in urls:
+        try:
+            r = requests.get(url, headers=headers, timeout=25)
+            if r.status_code != 200:
+                continue
+            data = r.json()
+            offers = data.get("offers") or data.get("bundles") or []
+            rates = []
+            for o in offers:
+                name = str(o.get("gpu_name", ""))
+                if gpu.lower() not in name.lower():
+                    continue
+                ng = o.get("num_gpus") or 1
+                dph = o.get("dph_total", o.get("dph_base"))
+                if dph and ng:
+                    per = float(dph) / float(ng)
+                    if 0.1 < per < 50:
+                        rates.append(per)
+            if len(rates) >= 3:
+                med = round(statistics.median(rates), 3)
+                print(f"  gpu_rental {gpu}: {len(rates)} offers, median ${med}/hr")
+                return med
+        except Exception as e:
+            print(f"  [warn] gpu_rental {url[:40]}: {e}")
+            continue
+    print(f"  [warn] gpu_rental {gpu}: no data (러너 인터넷/Vast 스키마 확인 필요)")
+    return None
+
+
+def _anchor_date(label):
+    """'2023' → '2023-01-01', '2026-06' → '2026-06-01', 'YYYY-MM-DD' → 그대로."""
+    if len(label) == 10:
+        return label
+    if len(label) == 4:
+        return label + "-01-01"
+    if len(label) == 7:
+        return label + "-01"
+    return label
+
+
+def update_gpu_rental_history():
+    """오늘자 렌탈 스냅샷을 data/gpu_rental_history.csv 에 누적.
+    파일 없으면 NVDA_WATCH 앵커로 시드 → 첫날부터 하락 곡선 확보.
+    Returns: [(YYYY-MM-DD, value), ...] 시간순."""
+    fp = DATA_DIR / "gpu_rental_history.csv"
+    rows = {}
+    for label, val in NVDA_WATCH.get("h100_rental", []):
+        rows[_anchor_date(label)] = float(val)
+    if fp.exists():
+        try:
+            prev = pd.read_csv(fp)
+            for _, rr in prev.iterrows():
+                rows[str(rr["date"])] = float(rr["h100_dph"])
+        except Exception as e:
+            print(f"  [warn] gpu_rental load: {e}")
+    today_val = safe("gpu_rental", fetch_gpu_rental_snapshot, default=None)
+    if today_val is not None:
+        rows[TODAY.strftime("%Y-%m-%d")] = float(today_val)
+    try:
+        out = pd.DataFrame(sorted(rows.items()), columns=["date", "h100_dph"])
+        out.to_csv(fp, index=False)
+        print(f"  gpu_rental history: {len(out)} points (latest ${out['h100_dph'].iloc[-1]}/hr)")
+    except Exception as e:
+        print(f"  [warn] gpu_rental save: {e}")
+    return sorted(rows.items())
 
 
 # ================================================================
@@ -1609,6 +1814,9 @@ def update_data():
     m7_basket = safe("m7_plus", fetch_m7_plus_basket, default={})
     us_indices_basket = safe("us_indices", fetch_us_indices_basket, default={})
     storage_basket = safe("storage", fetch_storage_basket, default={})
+    nvda_eco_basket = safe("nvda_eco", fetch_nvda_ecosystem_basket, default={})
+    neocloud_basket = safe("neocloud", fetch_neocloud_basket, default={})
+    gpu_rental_hist = update_gpu_rental_history()
     fed_debt  = safe("fed_debt", fetch_fed_debt,       default=pd.Series(dtype=float, name="fed_debt"))
     krwusd    = safe("krwusd",   fetch_krwusd,          default=pd.Series(dtype=float, name="krwusd"))
     cnn_fg    = safe("cnn_fg",   fetch_cnn_fear_greed,  default=pd.Series(dtype=float, name="cnn_fg"))
@@ -1623,6 +1831,8 @@ def update_data():
         "us_margin_debt":us_margin_debt,"kr_power_basket":kr_power_basket,
         "kr_ship_basket":kr_ship_basket,"kr_pcb_basket":kr_pcb_basket,"m7_basket":m7_basket,
         "us_indices_basket":us_indices_basket,"storage_basket":storage_basket,
+        "nvda_eco_basket":nvda_eco_basket,
+        "neocloud_basket":neocloud_basket,"gpu_rental_hist":gpu_rental_hist,
         "fed_debt":fed_debt,"krwusd":krwusd,"cnn_fg":cnn_fg,
         "macro_us":macro_us,"macro_kr":macro_kr,
         "sk_nav":sk_nav,"eps_basket":eps_basket,"eps2_basket":eps2_basket,
@@ -2328,6 +2538,139 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     js_data["storage_dates"] = storage_dates
     js_data["storage_series"] = storage_series
 
+    # --- 엔비디아 탭: 생태계 Base100 + CoreWeave 단독 주가 + 수동추적 데이터 ---
+    eco = extras.get("nvda_eco_basket", {}) or {}
+    eco_dates, eco_series = [], {}
+    if eco:
+        anchor = None
+        for pref in ["NVDA", "MSFT", "GOOGL", "AMZN"]:
+            if pref in eco and not eco[pref].empty:
+                anchor = eco[pref]; break
+        if anchor is None:
+            for _, s in eco.items():
+                if not s.empty:
+                    anchor = s; break
+        if anchor is not None:
+            cutoff = TODAY - dt.timedelta(days=365)
+            anchor = anchor[anchor.index >= cutoff]
+            eco_dates = [d.strftime("%Y-%m-%d") for d in anchor.index]
+            for ticker, s in eco.items():
+                # 각 종목을 '표시 구간 내 자기 첫 값'에 100으로 정규화 (IPO 이전 구간은 null 유지)
+                s2 = s[s.index >= cutoff].reindex(anchor.index).ffill()
+                dropped = s2.dropna()
+                if dropped.empty:
+                    continue
+                first_val = float(dropped.iloc[0])
+                if first_val > 0:
+                    normed = (s2 / first_val) * 100
+                    eco_series[ticker] = [None if pd.isna(v) else round(float(v), 2) for v in normed]
+    js_data["nvda_eco_dates"] = eco_dates
+    js_data["nvda_eco_series"] = eco_series
+
+    crwv = eco.get("CRWV", pd.Series(dtype=float))
+    if isinstance(crwv, pd.Series) and not crwv.empty:
+        c2 = crwv[crwv.index >= (TODAY - dt.timedelta(days=365))]
+        js_data["crwv_dates"] = [d.strftime("%Y-%m-%d") for d in c2.index]
+        js_data["crwv_vals"] = [round(float(v), 2) for v in c2]
+    else:
+        js_data["crwv_dates"], js_data["crwv_vals"] = [], []
+
+    js_data["nvda_watch"] = NVDA_WATCH
+
+    # ═══ 3대 조기경보 신호 (매일 갱신 프록시) ═══
+    # ① GPU 렌탈요율 추이 (Vast.ai 누적 + 기사 앵커)
+    gpu_hist = extras.get("gpu_rental_hist") or []
+    if not gpu_hist:
+        gpu_hist = [(_anchor_date(lab), float(v)) for lab, v in NVDA_WATCH.get("h100_rental", [])]
+    js_data["gpu_rental_dates"] = [d for d, _ in gpu_hist]
+    js_data["gpu_rental_vals"] = [round(float(v), 3) for _, v in gpu_hist]
+
+    # ② 신용 스트레스: CRWV 낙폭(1y peak 대비 %) + 미국 HY 스프레드(%p)
+    crwv_s = eco.get("CRWV", pd.Series(dtype=float))
+    cs_dates, cs_dd, cs_hy = [], [], []
+    hy = (extras.get("macro_us", {}) or {}).get("hy_spread", pd.Series(dtype=float))
+    if isinstance(crwv_s, pd.Series) and not crwv_s.empty:
+        c2 = crwv_s[crwv_s.index >= (TODAY - dt.timedelta(days=365))].sort_index()
+        if not c2.empty:
+            dd = (c2 / c2.cummax() - 1.0) * 100.0
+            cs_dates = [d.strftime("%Y-%m-%d") for d in c2.index]
+            cs_dd = [round(float(v), 2) for v in dd]
+            if isinstance(hy, pd.Series) and not hy.empty:
+                hy2 = hy.reindex(c2.index).ffill()
+                cs_hy = [None if pd.isna(v) else round(float(v), 2) for v in hy2]
+    js_data["cstress_dates"] = cs_dates
+    js_data["cstress_crwv_dd"] = cs_dd
+    js_data["cstress_hy"] = cs_hy
+
+    # ③ 순환 고리 균열: 네오클라우드(차입측) vs 펀더(NVDA+하이퍼) 상대강도
+    neo = extras.get("neocloud_basket", {}) or {}
+    funders = {k: eco[k] for k in ["NVDA", "MSFT", "GOOGL", "AMZN", "AVGO"]
+               if k in eco and not eco[k].empty}
+
+    def _avg_base100(basket, idx):
+        cols = []
+        for _, s in basket.items():
+            s2 = s.reindex(idx).ffill()
+            d0 = s2.dropna()
+            if d0.empty:
+                continue
+            f = float(d0.iloc[0])
+            if f > 0:
+                cols.append((s2 / f) * 100)
+        if not cols:
+            return None
+        return pd.concat(cols, axis=1).mean(axis=1)
+
+    circ_dates, circ_rep, circ_fund, circ_ratio = [], [], [], []
+    if funders:
+        base_idx = None
+        for k in ["NVDA", "MSFT", "GOOGL"]:
+            if k in funders:
+                base_idx = funders[k].index
+                break
+        if base_idx is None:
+            base_idx = list(funders.values())[0].index
+        cutoff = TODAY - dt.timedelta(days=365)
+        base_idx = pd.Index([d for d in base_idx if d >= cutoff])
+        fund = _avg_base100(funders, base_idx)
+        rep = _avg_base100(neo, base_idx) if neo else None
+        if fund is not None and len(base_idx) > 0:
+            fund_r = fund.reindex(base_idx)
+            circ_dates = [d.strftime("%Y-%m-%d") for d in base_idx]
+            circ_fund = [None if pd.isna(v) else round(float(v), 2) for v in fund_r]
+            if rep is not None:
+                rep_r = rep.reindex(base_idx)
+                circ_rep = [None if pd.isna(v) else round(float(v), 2) for v in rep_r]
+                ratio = (rep_r / fund_r) * 100
+                circ_ratio = [None if pd.isna(v) else round(float(v), 2) for v in ratio]
+    js_data["circ_dates"] = circ_dates
+    js_data["circ_rep"] = circ_rep
+    js_data["circ_fund"] = circ_fund
+    js_data["circ_ratio"] = circ_ratio
+
+    # 상태 칩용 요약 계산 (날짜 기반 변화율)
+    def _pct_change_days(dates_l, vals_l, days):
+        pairs = [(d, v) for d, v in zip(dates_l, vals_l) if v is not None]
+        if len(pairs) < 2:
+            return None
+        last_d = dt.datetime.strptime(pairs[-1][0], "%Y-%m-%d").date()
+        target = last_d - dt.timedelta(days=days)
+        base = None
+        for d, v in pairs:
+            if dt.datetime.strptime(d, "%Y-%m-%d").date() >= target:
+                base = v
+                break
+        if not base:
+            return None
+        return (pairs[-1][1] / base - 1) * 100
+
+    nvda_status = {
+        "rental": _pct_change_days(js_data["gpu_rental_dates"], js_data["gpu_rental_vals"], 30),
+        "credit": (cs_dd[-1] if cs_dd else None),
+        "circular": _pct_change_days(circ_dates, circ_ratio, 60) if circ_ratio else None,
+    }
+    js_data["nvda_status"] = nvda_status
+
     # 3-1. 연준 보유 국채 (FDHBFRBN, 분기별, 십억달러)
     fed_debt = extras.get("fed_debt", pd.Series(dtype=float))
     fed_debt_dates = []
@@ -2478,6 +2821,188 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
       </div>
         """
 
+    # --- 엔비디아 / AI 인프라 크레딧 사이클 탭 HTML 조립 ---
+    nw = NVDA_WATCH
+    cw = nw["coreweave"]
+    ul = nw["useful_life"]
+
+    nvda_sig_cards = f"""
+      <div class="sig" style="border-color:#DC2626">
+        <div class="sig-name">1. 감가상각 왜곡 (분모 리스크)</div>
+        <div class="sig-status" style="color:#DC2626">🔴 높음</div>
+        <div class="sig-desc">서버 내용연수 {ul['from_yr']}→{ul['to_yr']} 연장으로 연간 감가상각비 약 ${ul['dep_impact_bn']}B 축소(추정). 같은 현금지출·낮은 회계비용·높은 보고이익. 그러나 GPU는 18~24개월마다 성능·전력효율이 급개선 → 회계수명 ≫ 경제수명.</div>
+      </div>
+      <div class="sig" style="border-color:#EA580C">
+        <div class="sig-name">2. 비현금 평가이익</div>
+        <div class="sig-status" style="color:#EA580C">🟠 주의</div>
+        <div class="sig-desc">MS·구글·아마존의 OpenAI·Anthropic 지분 — 사설시장 밸류 상승분이 GAAP 이익으로 유입. 고객 현금매출이 아닌 장부상 평가이득. 랩 밸류가 정체·반전하면 같은 항목이 이익 역풍으로.</div>
+      </div>
+      <div class="sig" style="border-color:#EA580C">
+        <div class="sig-name">3. 순환매출 (Circular Revenue)</div>
+        <div class="sig-status" style="color:#EA580C">🟠 주의</div>
+        <div class="sig-desc">엔비디아↔CoreWeave, MS↔OpenAI(Azure), 구글↔Anthropic(TPU·리스보증). 계약 자체는 실재하나, 생태계 내부 자본 이동이 '깨끗한 독립 최종수요'를 증폭했을 가능성.</div>
+      </div>
+      <div class="sig" style="border-color:#B91C1C">
+        <div class="sig-name">4. GPU 담보 신용 (밸런스시트 리스크)</div>
+        <div class="sig-status" style="color:#B91C1C">🔴 높음</div>
+        <div class="sig-desc">6년 만기 대출 vs 3년 경제수명 GPU. 담보가치가 대출잔액보다 빨리 하락 → 2006 모기지 에코. GPU를 장수명 인프라처럼 취급하지만 실제론 빠르게 구형화되는 전자제품에 가까움.</div>
+      </div>
+    """
+
+    cw_cards = f"""
+      <div class="regime-card" style="border-top-color:#16A34A;">
+        <div class="regime-name">매출 ({cw['quarter']})</div>
+        <div class="regime-value">${cw['revenue_bn']:.2f}B</div>
+        <div class="regime-reasons">전년比 +{cw['rev_yoy_pct']}%</div>
+      </div>
+      <div class="regime-card" style="border-top-color:#DC2626;">
+        <div class="regime-name">순손실</div>
+        <div class="regime-value" style="color:#DC2626;">-${cw['net_loss_bn']:.2f}B</div>
+        <div class="regime-reasons">이자비용 ${cw['interest_bn']:.3f}B</div>
+      </div>
+      <div class="regime-card" style="border-top-color:#B91C1C;">
+        <div class="regime-name">총부채 / 레버리지</div>
+        <div class="regime-value">${cw['debt_bn']:.2f}B</div>
+        <div class="regime-reasons">약 {cw['leverage_x']}x</div>
+      </div>
+      <div class="regime-card" style="border-top-color:#F59E0B;">
+        <div class="regime-name">백로그</div>
+        <div class="regime-value">${cw['backlog_bn']:.1f}B</div>
+        <div class="regime-reasons">24개월 내 전환 {cw['conv_24m_pct']}% · 4년 내 {cw['conv_4y_pct']}%</div>
+      </div>
+      <div class="regime-card" style="border-top-color:#7C3AED;">
+        <div class="regime-name">엔비디아 지분투자</div>
+        <div class="regime-value">${cw['nvda_equity_bn']:.1f}B</div>
+        <div class="regime-reasons">같은 분기 · 공급-고객 순환</div>
+      </div>
+    """
+
+    credit_rows = ""
+    for d_, label_, tag_ in nw["credit_events"]:
+        if tag_ == "ig":
+            badge_style, badge_txt = "background:#DCFCE7;color:#166534;", "투자등급"
+        else:
+            badge_style, badge_txt = "background:#FEE2E2;color:#991B1B;", "정크"
+        credit_rows += (
+            f'<div style="display:flex;gap:12px;align-items:center;padding:9px 0;border-bottom:1px solid #f0f0f0;">'
+            f'<div style="min-width:76px;font-weight:600;color:#333;">{d_}</div>'
+            f'<div style="flex:1;color:#555;font-size:13px;">{label_}</div>'
+            f'<div style="padding:2px 10px;border-radius:6px;font-size:12px;font-weight:600;{badge_style}">{badge_txt}</div>'
+            f'</div>\n'
+        )
+
+    circular_rows = ""
+    for a_, b_ in nw["circular"]:
+        circular_rows += (
+            f'<div style="display:flex;gap:12px;padding:9px 0;border-bottom:1px solid #f0f0f0;">'
+            f'<div style="min-width:180px;font-weight:600;color:#166534;">{a_}</div>'
+            f'<div style="color:#555;font-size:13px;">{b_}</div></div>\n'
+        )
+
+    domino_chain = ' <span style="color:#DC2626;font-weight:700;">→</span> '.join(
+        f'<span style="display:inline-block;background:#FEF2F2;border:1px solid #FCA5A5;'
+        f'border-radius:8px;padding:6px 12px;font-size:13px;color:#991B1B;white-space:nowrap;">{step}</span>'
+        for step in nw["domino"]
+    )
+
+    watchlist_items = "".join(f'<li style="margin-bottom:7px;">{w}</li>' for w in nw["watchlist"])
+
+    # 3대 신호 상태 칩
+    def _chip_html(label, val, kind):
+        if val is None:
+            emoji, col, txt, note = "⚪", "#9CA3AF", "—", "데이터 수집 중"
+        elif kind == "down_bad":
+            txt = f"{val:+.1f}%"
+            if val <= -5:   emoji, col, note = "🔴", "#DC2626", "하락 가속 — 경고"
+            elif val < -1:  emoji, col, note = "🟠", "#EA580C", "약세"
+            else:           emoji, col, note = "🟢", "#16A34A", "안정 / 반등"
+        elif kind == "level_bad":
+            txt = f"{val:.1f}%"
+            if val <= -20:  emoji, col, note = "🔴", "#DC2626", "깊은 낙폭 — 경고"
+            elif val <= -8: emoji, col, note = "🟠", "#EA580C", "조정 국면"
+            else:           emoji, col, note = "🟢", "#16A34A", "견조"
+        else:
+            emoji, col, txt, note = "⚪", "#9CA3AF", str(val), ""
+        return (
+            f'<div style="flex:1;min-width:180px;background:#fff;border-radius:12px;'
+            f'border-left:5px solid {col};padding:14px 16px;">'
+            f'<div style="font-size:12px;color:#888;">{label}</div>'
+            f'<div style="font-size:22px;font-weight:700;color:{col};margin:2px 0;">{emoji} {txt}</div>'
+            f'<div style="font-size:11px;color:#666;">{note}</div></div>'
+        )
+
+    _st = js_data.get("nvda_status", {})
+    nvda_chips_html = (
+        _chip_html("① GPU 렌탈요율 (30일 변화)", _st.get("rental"), "down_bad")
+        + _chip_html("② CRWV 낙폭 (신용 스트레스)", _st.get("credit"), "level_bad")
+        + _chip_html("③ 순환 상대강도 (60일 변화)", _st.get("circular"), "down_bad")
+    )
+
+    nvda_pane_html = f"""
+<div id="pane-nvda" class="pane">
+  <div class="section-title">🟩 엔비디아 · AI 인프라 크레딧 사이클 워치</div>
+  <div style="background:#fff;border-left:6px solid #16A34A;border-radius:12px;padding:16px 20px;margin-bottom:18px;">
+    <div style="font-size:15px;font-weight:600;color:#166534;margin-bottom:6px;">핵심 논지 — 닷컴(2000)이 아니라 금융위기(2008)형일 수 있다</div>
+    <div style="font-size:13px;color:#555;line-height:1.75;">
+      엔비디아는 선행 PER 30배 초반, 빅테크는 20배 안팎 — 밸류(<b>분자</b>)는 비싸 보이지 않는다.
+      문제는 <b>이익의 질(분모)</b>이다. 감가상각 연장·비현금 평가이익·순환매출·공격적 인프라 금융이
+      보고이익을 떠받치고 있어, 주가를 그 이익으로 나누면 실제 장기 수익력보다 오히려 <b>싸 보일</b> 수 있다.
+      진짜 신호는 엔비디아 멀티플이 아니라 <b>GPU 렌탈요율 · GPU 담보대출 조건 · 순환금융 구조의 균열</b>.
+    </div>
+    <div style="font-size:11px;color:#999;margin-top:10px;">📌 아래 <b>🚨 3대 조기경보</b>는 매일 갱신되는 시장 프록시. 그 밑 스냅샷·구조 수치는 <b>수동 추적</b>(갱신: {nw['updated']}) — monitor.py의 <code>NVDA_WATCH</code>에서 편집.</div>
+  </div>
+
+  <div class="section-title">🚨 매일 체크 — 3대 조기경보 신호</div>
+  <div style="font-size:12px;color:#888;margin-bottom:12px;">정식 데이터(신용등급·사설 밸류·공식 렌탈지수)는 이벤트성/유료라 자동수집 불가. 아래는 <b>매일 갱신되는 시장 프록시</b>로, 방향성을 가장 먼저 포착하기 위한 것.</div>
+  <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px;">{nvda_chips_html}</div>
+
+  <div style="font-size:13px;font-weight:600;color:#166534;margin:6px 0 4px;">① GPU 실물 렌탈요금 — 추가 하락 여부</div>
+  <div style="font-size:12px;color:#888;margin-bottom:6px;">Vast.ai H100 마켓 중앙값(프록시)을 매일 누적 + 기사 앵커. 하락 지속 = GPU(담보) 수익력 훼손 → 담보가치 하락으로 전이되는 첫 신호.</div>
+  <div class="chart"><div id="c_nvda_rental" style="height:340px;"></div></div>
+
+  <div style="font-size:13px;font-weight:600;color:#166534;margin:16px 0 4px;">② GPU 담보 신용 — 악화(정크 전환) 여부</div>
+  <div style="font-size:12px;color:#888;margin-bottom:6px;">CRWV 낙폭(1차 손실층 · 매일) + 미국 하이일드 스프레드(FRED). 등급 이벤트는 세로 점선. 둘이 함께 벌어지면 담보 신용 붕괴 임박.</div>
+  <div class="chart"><div id="c_nvda_cstress" style="height:360px;"></div></div>
+
+  <div style="font-size:13px;font-weight:600;color:#166534;margin:16px 0 4px;">③ 순환 금융 고리 — 균열 여부</div>
+  <div style="font-size:12px;color:#888;margin-bottom:6px;">차입측(네오클라우드: CRWV·NBIS·IREN·APLD·CORZ) vs 펀더(NVDA·하이퍼스케일러) 상대강도. 100 밑으로 벌어질수록 = 자본을 <b>받는</b> 노드가 먼저 무너지는 '고리 균열'.</div>
+  <div class="chart"><div id="c_nvda_circ" style="height:380px;"></div></div>
+
+  <div class="section-title">위험 신호 — 4대 압력 지점</div>
+  <div class="signal-grid">{nvda_sig_cards}</div>
+
+  <div class="section-title">🐤 신용 카나리아 — CoreWeave ({cw['quarter']})</div>
+  <div style="font-size:12px;color:#888;margin-bottom:10px;">GPU 담보 신용사이클의 가장 선명한 사례. 주가·채권 스프레드가 붕괴보다 먼저 움직인다.</div>
+  <div class="regime-grid" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr));margin-bottom:16px;">{cw_cards}</div>
+  <div class="chart"><div id="c_nvda_crwv" style="height:340px;"></div></div>
+
+  <div class="section-title">GPU 담보 신용등급 마이그레이션</div>
+  <div style="background:#fff;border-radius:12px;padding:6px 18px;margin-bottom:18px;">{credit_rows}</div>
+
+  <div class="section-title">순환출자 · 순환매출 구조</div>
+  <div style="background:#fff;border-radius:12px;padding:6px 18px;margin-bottom:18px;">{circular_rows}</div>
+
+  <div class="section-title">생태계 주가 추세 (Base 100 · 각 종목 표시 시작일=100)</div>
+  <div style="font-size:12px;color:#888;margin-bottom:8px;">CRWV는 '25.3 상장이라 시작점이 다름 — 각 라인은 자기 첫 관측일 기준 정규화.</div>
+  <div class="chart"><div id="c_nvda_eco" style="height:460px;"></div></div>
+
+  <div class="section-title" style="font-size:14px;margin-top:20px;">참고 — 구조적 배경</div>
+  <div class="chart"><div id="c_nvda_buildcost" style="height:320px;"></div></div>
+
+  <div class="section-title">전이 경로 (도미노)</div>
+  <div style="background:#fff;border-radius:12px;padding:20px 18px;margin-bottom:18px;line-height:2.6;">{domino_chain}</div>
+
+  <div class="section-title">📋 감시 체크리스트</div>
+  <div style="background:#fff;border-radius:12px;padding:14px 18px 14px 36px;margin-bottom:16px;">
+    <ul style="margin:0;color:#444;font-size:13px;line-height:1.5;">{watchlist_items}</ul>
+  </div>
+
+  <div style="font-size:11px;color:#aaa;margin-bottom:10px;">
+    ⚠️ 수치 출처: 첨부 논지(Antfeed) 기준값. H100 렌탈요율·GW당 건설비는 기사 명시 앵커 2점이며, 관측치가 늘면 monitor.py의 <code>NVDA_WATCH</code> 딕셔너리에서 직접 갱신하세요. 투자 권유 아님.
+  </div>
+</div>
+"""
+
     html = f"""<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -2529,6 +3054,7 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
   <div class="tab" data-tab="macro">📡 매크로</div>
   <div class="tab" data-tab="eps">📊 EPS 추이</div>
   <div class="tab" data-tab="eps2">📈 EPS 추이2</div>
+  <div class="tab" data-tab="nvda">🟩 엔비디아</div>
 </div>
 
 <div id="pane-kr" class="pane active">
@@ -2675,6 +3201,8 @@ def render_dashboard(df, signals, regime_kr, regime_us, extras=None):
     <div class="chart"><div id="eps2_ARM"   style="height:340px;"></div></div>
   </div>
 </div>
+
+{nvda_pane_html}
 
 <div class="footer">데이터: FinanceDataReader, FRED(미국 10Y), 네이버 금융/공공데이터/보조 스크래핑 · 투자 권유 아님</div>
 
@@ -3971,6 +4499,185 @@ safePlot('c_us_cor1m', [{{x: D.dates, y: D.cor1m, type: 'scatter', mode: 'lines'
       showEmpty(id, d.name + ' — 렌더링 실패');
     }}
   }});
+}})();
+
+// ════════════════════════════════════════════════════════
+// 엔비디아 탭 — 생태계 Base100 / CRWV / H100 렌탈 / 건설비
+// ════════════════════════════════════════════════════════
+(function() {{
+  const id = 'c_nvda_eco';
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (!D.nvda_eco_dates || !D.nvda_eco_dates.length || !D.nvda_eco_series || !Object.keys(D.nvda_eco_series).length) {{ showEmpty(id); return; }}
+  try {{
+    const colorMap = {{'NVDA':'#16A34A','CRWV':'#DC2626','MSFT':'#0078D4','GOOGL':'#1A56DB','AMZN':'#FF9900','AVGO':'#B91C1C'}};
+    const labelMap = {{'NVDA':'엔비디아','CRWV':'코어위브','MSFT':'MS','GOOGL':'구글','AMZN':'아마존','AVGO':'브로드컴'}};
+    const order = ['NVDA','CRWV','MSFT','GOOGL','AMZN','AVGO'];
+    const traces = [];
+    order.forEach(t => {{
+      const vals = D.nvda_eco_series[t];
+      if (!vals || !hasValues(vals)) return;
+      traces.push({{
+        x: D.nvda_eco_dates, y: vals, type:'scatter', mode:'lines',
+        name: labelMap[t] || t, connectgaps:true, _key:t,
+        line:{{color: colorMap[t] || '#666', width:(t==='NVDA'||t==='CRWV')?2.9:2.2, shape:'spline', smoothing:1.0}},
+        hoverlabel:{{font:{{size:13}}}}
+      }});
+    }});
+    if (!traces.length) {{ showEmpty(id); return; }}
+    const ranking = traces.map(t => {{
+      const lv = [...t.y].reverse().find(v => v !== null && v !== undefined);
+      return {{key:t._key, name:t.name, last:lv}};
+    }}).filter(x => x.last !== undefined && x.last !== null).sort((a,b) => b.last - a.last);
+    const rankAnnotations = ranking.map((x,i) => ({{
+      xref:'paper', yref:'paper', x:0.012, y:0.985-(i*0.05),
+      xanchor:'left', yanchor:'top', showarrow:false,
+      text:'<b>'+(i+1)+'위</b> '+x.name+'<b> '+x.last.toFixed(1)+'</b>',
+      font:{{size:13, color: colorMap[x.key] || '#333', family:'system-ui'}}
+    }}));
+    Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
+      title:{{text:'엔비디아 + CoreWeave + 하이퍼스케일러 누적 추세 (Base 100)', font:{{size:14}}}},
+      yaxis:{{title:{{text:'Base 100', font:{{size:12}}}}, gridcolor:'#F3F4F6'}},
+      xaxis:{{gridcolor:'#F3F4F6'}},
+      shapes:[{{type:'line', xref:'paper', x0:0, x1:1, yref:'y', y0:100, y1:100, line:{{color:'#ccc', width:1, dash:'dot'}}}}],
+      legend:{{orientation:'h', y:-0.12, x:0.5, xanchor:'center', font:{{size:11}}}},
+      margin:{{t:56, r:30, b:60, l:56}}, annotations:rankAnnotations, hovermode:'x unified'
+    }}), {{displayModeBar:false, responsive:true}});
+  }} catch(e) {{ console.error('nvda_eco', e); showEmpty(id); }}
+}})();
+
+(function() {{
+  const id = 'c_nvda_crwv';
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (!D.crwv_dates || !D.crwv_dates.length || !hasValues(D.crwv_vals)) {{ showEmpty(id, 'CoreWeave(CRWV) 주가 — 수집 실패 또는 상장 이력 짧음'); return; }}
+  try {{
+    Plotly.newPlot(id, [{{
+      x:D.crwv_dates, y:D.crwv_vals, type:'scatter', mode:'lines', name:'CRWV',
+      connectgaps:true, line:{{color:'#DC2626', width:2.6}},
+      fill:'tozeroy', fillcolor:'rgba(220,38,38,0.06)',
+      hovertemplate:'%{{x}}<br>$%{{y:.2f}}<extra></extra>'
+    }}], Object.assign({{}}, base, {{
+      title:{{text:'CoreWeave (CRWV) 주가 — 신용 카나리아 (USD)', font:{{size:14}}}},
+      yaxis:{{title:{{text:'USD', font:{{size:12}}}}, gridcolor:'#F3F4F6', rangemode:'tozero'}},
+      xaxis:{{gridcolor:'#F3F4F6'}}, showlegend:false, margin:{{t:52, r:30, b:46, l:56}}
+    }}), {{displayModeBar:false, responsive:true}});
+  }} catch(e) {{ console.error('crwv', e); showEmpty(id); }}
+}})();
+
+(function() {{
+  const id = 'c_nvda_rental';
+  const el = document.getElementById(id);
+  if (!el) return;
+  const xs = D.gpu_rental_dates || [], ys = D.gpu_rental_vals || [];
+  if (!xs.length || !hasValues(ys)) {{ showEmpty(id, 'GPU 렌탈요율 — 데이터 누적 중 (러너에서 Vast.ai 수집)'); return; }}
+  try {{
+    Plotly.newPlot(id, [{{
+      x:xs, y:ys, type:'scatter', mode:'lines+markers', name:'H100 $/hr (중앙값)',
+      connectgaps:true, line:{{color:'#DC2626', width:2.6}}, marker:{{size:5, color:'#DC2626'}},
+      hovertemplate:'%{{x}}<br>$%{{y:.2f}}/hr<extra></extra>'
+    }}], Object.assign({{}}, base, {{
+      title:{{text:'① GPU(H100) 실물 렌탈요율 ($/hr · Vast.ai 프록시 + 앵커)', font:{{size:13}}}},
+      yaxis:{{title:{{text:'USD / hr', font:{{size:12}}}}, gridcolor:'#F3F4F6', rangemode:'tozero'}},
+      xaxis:{{gridcolor:'#F3F4F6'}}, showlegend:false, margin:{{t:50, r:30, b:46, l:56}},
+      annotations:[{{xref:'paper', yref:'paper', x:0.97, y:0.95, xanchor:'right', yanchor:'top', showarrow:false,
+        text:'하락 지속 = 담보(GPU) 수익력 훼손', align:'right', font:{{size:10, color:'#991B1B'}}}}]
+    }}), {{displayModeBar:false, responsive:true}});
+  }} catch(e) {{ console.error('rental', e); showEmpty(id); }}
+}})();
+
+(function() {{
+  const id = 'c_nvda_cstress';
+  const el = document.getElementById(id);
+  if (!el) return;
+  const xs = D.cstress_dates || [];
+  if (!xs.length || !hasValues(D.cstress_crwv_dd)) {{ showEmpty(id, 'CRWV 신용 스트레스 — 수집 실패 또는 이력 짧음'); return; }}
+  try {{
+    const traces = [{{
+      x:xs, y:D.cstress_crwv_dd, type:'scatter', mode:'lines', name:'CRWV 낙폭 (%)',
+      connectgaps:true, line:{{color:'#DC2626', width:2.6}}, fill:'tozeroy', fillcolor:'rgba(220,38,38,0.06)',
+      hovertemplate:'%{{x}}<br>낙폭 %{{y:.1f}}%<extra></extra>'
+    }}];
+    if (hasValues(D.cstress_hy)) traces.push({{
+      x:xs, y:D.cstress_hy, type:'scatter', mode:'lines', name:'美 HY 스프레드 (%p)', yaxis:'y2',
+      connectgaps:true, line:{{color:'#7C3AED', width:2.2, dash:'dot'}},
+      hovertemplate:'%{{x}}<br>HY %{{y:.2f}}%p<extra></extra>'
+    }});
+    const shapes = [], anns = [];
+    const ev = (D.nvda_watch && D.nvda_watch.credit_events) || [];
+    ev.forEach(function(e) {{
+      const d = e[0], tag = e[2];
+      const col = (tag === 'junk') ? '#B91C1C' : '#16A34A';
+      shapes.push({{type:'line', xref:'x', x0:d, x1:d, yref:'paper', y0:0, y1:1, line:{{color:col, width:1.4, dash:'dash'}}}});
+      anns.push({{x:d, xref:'x', yref:'paper', y:1.02, xanchor:'center', yanchor:'bottom', showarrow:false,
+        text:(tag === 'junk') ? '정크' : 'IG', font:{{size:10, color:col}}}});
+    }});
+    Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
+      title:{{text:'② GPU 담보 신용 스트레스 — CRWV 낙폭 + HY 스프레드', font:{{size:13}}}},
+      yaxis:{{title:{{text:'CRWV 낙폭 (%)', font:{{size:11}}}}, gridcolor:'#F3F4F6', rangemode:'tozero'}},
+      yaxis2:{{title:{{text:'HY 스프레드 (%p)', font:{{size:11}}}}, overlaying:'y', side:'right', showgrid:false}},
+      xaxis:{{gridcolor:'#F3F4F6'}}, shapes:shapes, annotations:anns,
+      legend:{{orientation:'h', y:-0.15, x:0.5, xanchor:'center', font:{{size:11}}}}, margin:{{t:56, r:56, b:56, l:56}}
+    }}), {{displayModeBar:false, responsive:true}});
+  }} catch(e) {{ console.error('cstress', e); showEmpty(id); }}
+}})();
+
+(function() {{
+  const id = 'c_nvda_circ';
+  const el = document.getElementById(id);
+  if (!el) return;
+  const xs = D.circ_dates || [];
+  if (!xs.length || (!hasValues(D.circ_rep) && !hasValues(D.circ_fund))) {{ showEmpty(id, '순환 고리 — 수집 실패 또는 이력 짧음'); return; }}
+  try {{
+    const traces = [];
+    if (hasValues(D.circ_fund)) traces.push({{
+      x:xs, y:D.circ_fund, type:'scatter', mode:'lines', name:'펀더 (NVDA+하이퍼) B100',
+      connectgaps:true, line:{{color:'#16A34A', width:2.4}}, hovertemplate:'%{{x}}<br>펀더 %{{y:.1f}}<extra></extra>'
+    }});
+    if (hasValues(D.circ_rep)) traces.push({{
+      x:xs, y:D.circ_rep, type:'scatter', mode:'lines', name:'차입측 (네오클라우드) B100',
+      connectgaps:true, line:{{color:'#DC2626', width:2.4}}, hovertemplate:'%{{x}}<br>차입측 %{{y:.1f}}<extra></extra>'
+    }});
+    if (hasValues(D.circ_ratio)) traces.push({{
+      x:xs, y:D.circ_ratio, type:'scatter', mode:'lines', name:'상대강도 (차입/펀더 ×100)', yaxis:'y2',
+      connectgaps:true, line:{{color:'#7C3AED', width:2.6, dash:'dot'}}, hovertemplate:'%{{x}}<br>상대강도 %{{y:.1f}}<extra></extra>'
+    }});
+    if (!traces.length) {{ showEmpty(id); return; }}
+    const shapes = [{{type:'line', xref:'paper', x0:0, x1:1, yref:'y2', y0:100, y1:100, line:{{color:'#C4B5FD', width:1, dash:'dot'}}}}];
+    Plotly.newPlot(id, traces, Object.assign({{}}, base, {{
+      title:{{text:'③ 순환 고리 균열 — 차입측 vs 펀더 상대강도', font:{{size:13}}}},
+      yaxis:{{title:{{text:'Base 100', font:{{size:11}}}}, gridcolor:'#F3F4F6'}},
+      yaxis2:{{title:{{text:'상대강도 (100=동행)', font:{{size:11}}}}, overlaying:'y', side:'right', showgrid:false}},
+      xaxis:{{gridcolor:'#F3F4F6'}}, shapes:shapes,
+      legend:{{orientation:'h', y:-0.16, x:0.5, xanchor:'center', font:{{size:10}}}}, margin:{{t:56, r:60, b:60, l:56}},
+      annotations:[{{xref:'paper', yref:'paper', x:0.99, y:0.02, xanchor:'right', yanchor:'bottom', showarrow:false,
+        text:'상대강도 100↓ 확대 = 고리 균열', font:{{size:10, color:'#6D28D9'}}}}]
+    }}), {{displayModeBar:false, responsive:true}});
+  }} catch(e) {{ console.error('circ', e); showEmpty(id); }}
+}})();
+
+(function() {{
+  const id = 'c_nvda_buildcost';
+  const el = document.getElementById(id);
+  if (!el) return;
+  const arr = (D.nvda_watch && D.nvda_watch.buildcost_gw) || [];
+  if (!arr.length) {{ showEmpty(id); return; }}
+  try {{
+    const x = arr.map(p => p[0]), y = arr.map(p => p[1]);
+    const palette = ['#F59E0B','#EA580C','#DC2626','#B91C1C'];
+    Plotly.newPlot(id, [{{
+      x:x, y:y, type:'bar', name:'GW당 건설비',
+      text: y.map(v => '$'+v+'B'), textposition:'outside', textfont:{{size:13, color:'#7B4F00'}},
+      marker:{{color: palette.slice(0, y.length)}},
+      hovertemplate:'%{{x}}<br>$%{{y}}B / GW<extra></extra>'
+    }}], Object.assign({{}}, base, {{
+      title:{{text:'데이터센터 GW당 건설비 상승 ($B)', font:{{size:14}}}},
+      yaxis:{{title:{{text:'십억 USD / GW', font:{{size:12}}}}, gridcolor:'#F3F4F6', rangemode:'tozero'}},
+      xaxis:{{gridcolor:'#F3F4F6'}}, showlegend:false, margin:{{t:52, r:24, b:46, l:56}},
+      annotations:[{{xref:'paper', yref:'paper', x:0.5, y:0.95, xanchor:'center', yanchor:'top', showarrow:false,
+        text:'같은 매출 → 신규투자 수익률 하락', font:{{size:10, color:'#991B1B'}}}}]
+    }}), {{displayModeBar:false, responsive:true}});
+  }} catch(e) {{ console.error('buildcost', e); showEmpty(id); }}
 }})();
 
 </script>
